@@ -85,7 +85,7 @@ cpmbios	equ	04a00h+cpmoffset ; BIOS only emulates character I/O
 	list	on
 
 	extrn	PFN
-	extrn	FCREAT,FOPEN
+	extrn	FCREAT,FOPEN,FCLOSE
 
   endif ;RSX280
 
@@ -127,7 +127,8 @@ stderr	equ	LUNTI	; Use terminal
 
 flag_r	equ	1 SHL FM.RD	; R mode for file open()
 flag_w	equ	1 SHL FM.WR	; W mode for file open()
-flag_rw	equ	2	; R/W mode for file open() **CHECK THIS
+;**CHECK THIS
+flag_rw	equ	(1 SHL FM.RD) OR (1 SHL FM.WR)	; R/W mode for file open()
 
   endif ;RSX280
 	page
@@ -967,6 +968,10 @@ reentry:
 
 arg_5:				; HL contains the LUN of opened file
 
+;**TEMP - just close it
+	push	hl		; close(lun)
+	call	_close
+	pop	de
 	jp	reentry
 ;**TODO - read .COM file into TPA
 
@@ -1028,7 +1033,7 @@ m_2:
 	ld	hl,bdos
 	ld	(0006),hl
 
-	ld	a,0ffh		; enable uppercase input
+	ld	a,0ffh		; enable lowercase input
 	ld	(ttlc),a
 
 	ld	sp,hl		; set stack pointer to BDOS entry
@@ -1053,7 +1058,7 @@ FIRST3::
   if RSX280
 ; Program loaded - off we go!
 	ld	hl,done		; Push a return address
-	push	hl		; to return to the CPM> prompt
+	push	hl		; to return to the CPM X> prompt
 	jp	tpa		; Start transient program
 
 ;*******************************************************************
@@ -1161,7 +1166,7 @@ arg_3:
 arg_4:
     endif ;DEBUG
 
-	ex	de,hl
+	ex	de,hl		; return argc value
 	ret
 
 ;*******************************************************************
@@ -1524,19 +1529,19 @@ _ioctl:
 ; fork()
 _fork:
 	SC 32
-DISP:	jr	nc,NOERR
+DISP:	ret	nc		; no error
 	ld	(errno),hl
 	ld	hl,-1
-NOERR:	ret
+	ret
 
   endif ;UZI280
 
 ;*******************************************************************
   if RSX280
-;
-;   Translate into system calls for RSX280
-;
+
 ; int open(char *name,int flag)
+;
+; Open a file with the filename in the string name with mode flag
 ;
 ; Parameters passed on the stack
 ;
@@ -1559,6 +1564,7 @@ op_0:	ld	a,(hl)
 	defb	CR,LF,'OPEN-F-No free LUN',0
     endif ;DEBUG
 
+cl_err:
 op_err:	ld	hl,-1		; no free LUNs, return error
 	scf
 	ret
@@ -1619,12 +1625,42 @@ op_6:	jp	c,DISP
     endif ;DEBUG
 
 	ld	hl,(opnlun)	; return the LUN of opened file
-	or	a		;  from file storage region
-	jp	NOERR
+	or	a		; clear carry
+	ret
 
 ; close(int index)
+;
+; Close the opened file with the LUN given by index
+;
 _close:
-	SC 2
+	ldw	hl,(sp+2)
+	ld	a,h
+	or	l
+	jp	z,cl_err	; LUN cannot be zero
+	cpw	hl,luntbsz+1
+	jp	nc,cl_err	; LUN > maximum allowed
+	ld	(opnlun),hl
+	ld	b,h
+	ld	c,l
+	ld	de,fsrsz
+	ld	ix,fsr_1	; Which file storage region to use?
+
+cl_2:	dec	bc		; index by LUN-1
+	ld	a,c
+	or	a
+	jr	z,cl_3
+	add	ix,de
+	jr	cl_2
+
+cl_3:	; IX points to the file storage region for this LUN
+	call	FCLOSE		; close it
+
+	ld	de,(opnlun)
+	dec	de
+	ld	hl,luntb
+	add	hl,de
+	res	0,(hl)		; Mark this LUN as available
+	ld	hl,EX.SUC	; Exit with success result
 	jp	DISP
 
 ; creat(char *name,int mode)
@@ -1673,10 +1709,10 @@ _write:
 _seek:
 	SC 9
 
-DISP:	jr	nc,NOERR
+DISP:	ret	nc		;No error
 	ld	(errno),hl
 	ld	hl,-1
-NOERR:	ret
+	ret
   endif ;RSX280
 
 ;*******************************************************************

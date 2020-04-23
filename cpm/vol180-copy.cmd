@@ -12,6 +12,8 @@ delete cpm.rel
 import cpm.rel cpm.rel
 delete cpm.cmd
 import cpm.cmd cpm.cmd
+delete cpm.tsk
+import cpm.tsk cpm.tsk /c
 delete dcb.inc
 import dcb.inc dcb.inc
 delete errors.inc
