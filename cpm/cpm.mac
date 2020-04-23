@@ -9,7 +9,7 @@
 ;	Stefan Nitschke, 13.3.1996
 ;
 ;	Adaption and programming for RSX280 by
-;	Tony Nicholson, 19-Apr-2020
+;	Tony Nicholson, 23-Apr-2020
 ;
 ;  This program is free software; you can redistribute it and/or
 ;  modify it under the terms of the GNU General Public License as
@@ -63,6 +63,8 @@ cpmbios	equ	04a00h+cpmoffset ; BIOS only emulates character I/O
 
 	; RSX280 definitions (list off)
 	list	off
+    ifdef ZXCC
+	; cross-compile with include files in current directory
 	include SYSFN.INC
 	include FCB.INC
 	include	DCB.INC
@@ -70,6 +72,16 @@ cpmbios	equ	04a00h+cpmoffset ; BIOS only emulates character I/O
 	include	QIO.INC
 	include	FCSLIB.INC
 	include	ERRORS.INC
+    else
+	; native RSX280 has include files in LB:[SYSTEM]
+	include $SYSFN.INC
+	include $FCB.INC
+	include	$DCB.INC
+	include	$TCB.INC
+	include	$QIO.INC
+	include	$FCSLIB.INC
+	include	$ERRORS.INC
+    endif ;ZXCC
 	list	on
 
 	extrn	PFN

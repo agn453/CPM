@@ -18,7 +18,7 @@ all: cpm.tsk
 # *.inc and .lib files are copied from the latest RSX280 build
 # in the libs/fcslib and libs/syslib sub-directories
 $(OBJS): %.rel: %.mac *.inc
-	$(ZXCC) $(ZSM4) -"=$</l"
+	$(ZXCC) $(ZSM4) -"=$</l/dZXCC"
 
 cpm.tsk: $(OBJS) syslib.lib fcslib.lib
 	$(ZXCC) $(TKB) -"$@,cpm,cpm=cpm,fcslib/lb,syslib/lb/task=...CPM/asg=TI:5,SY:1-4"
