@@ -114,7 +114,7 @@ LUNTI	equ	5	; Terminal Interface LUN (TI:)
 
 TIEFN	equ	1	; event flag for AST terminal input
 TOEFN	equ	2	; event flag for console output
-FIOEFN	equ	3	; first event flag for file I/O
+FIOEFN	equ	3	; event flag for file I/O
 
 ; Console terminal queue offsets
 TQ.IP	equ	0	; input pointer
@@ -753,7 +753,7 @@ getnb:	ld	a,(hl)
 	ret	z
 	call	isblnk
 	ret	nz
-	inc	de
+	inc	hl
 	jr	getnb
 
 ; return Z if char in A is blank.
@@ -766,7 +766,7 @@ isblnk:	or	a
 
   endif ;RSX280
 
-; Ccopy NUL terminated string pointed to by HL to DE
+; Copy NUL terminated string pointed to by HL to DE
 ;
 ; Pointers are advanced to allow concatenation.
 ; The terminating NUL is copied.
@@ -1945,7 +1945,7 @@ bios::	jp	done		;0 Cold Boot
 
   if RSX280
 
-; We use FCS to access files.  These are the  File Storage Regions for
+; We use FCS to access files.  These are the File Storage Regions for
 ; each of the LUNs that are used (only 4 at present)
 
 ; Note: The file access mode bits are overwritten by the _open
