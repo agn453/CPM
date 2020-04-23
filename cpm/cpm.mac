@@ -1,0 +1,1950 @@
+	title	CPM emulator
+	ident	"V0.99"	; Pre-release version
+
+;*******************************************************************
+;
+;	CPM - CP/M 2.2 BDOS/BIOS emulation for RSX280
+;
+;	Initially developed for UZI280 by
+;	Stefan Nitschke, 13.3.1996
+;
+;	Adaption and programming for RSX280 by
+;	Tony Nicholson, 19-Apr-2020
+;
+;  This program is free software; you can redistribute it and/or
+;  modify it under the terms of the GNU General Public License as
+;  published by the Free Software Foundation; either version of
+;  the License, or (at your option) any later version.
+;
+;  This program is distributed in the hope that it will be useful,
+;  but WITHOUT ANY WARRANTY; without even the implied warranty of
+;  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+;  GNU General Public License for more details.
+;
+;  You should have received a copy of the GNU General Public License
+;  along with this program; if not, write to the Free Software
+;  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+;
+;*******************************************************************
+
+	.Z280		; Z280 only for now.
+			; At some later stage a version may
+			; be released for RSX180 on the Z180.
+
+FALSE	equ	0
+TRUE	equ	not FALSE
+
+BS	equ	08h
+CR	equ	0Dh
+LF	equ	0Ah
+FF	equ	0Ch
+TAB	equ	09h
+EOF	equ	1Ah
+RUBOUT	equ	7Fh
+
+RSX280	equ	TRUE
+
+UZI280	equ	not RSX280	; original code preserved
+
+DEBUG	equ	TRUE		; output debugging messages
+
+; CP/M memory sizing
+memsize	equ	48		; A modest machine first - 48KB
+topmem	equ	memsize*1024
+cpmoffset equ	topmem-20*1024	; based on standard CP/M 2.2
+
+; Where CP/M expects things to be
+cpmtpa	equ	00100h		 ; Transient programs are loaded here
+cpmccp	equ	03400h+cpmoffset ; CCP is implemented by this program
+cpmbdos	equ	03c00h+cpmoffset ; BDOS contains emulation code
+cpmbios	equ	04a00h+cpmoffset ; BIOS only emulates character I/O
+
+  if RSX280
+
+	; RSX280 definitions (list off)
+	list	off
+	include SYSFN.INC
+	include FCB.INC
+	include	DCB.INC
+	include	TCB.INC
+	include	QIO.INC
+	include	FCSLIB.INC
+	include	ERRORS.INC
+	list	on
+
+	extrn	PFN
+	extrn	FCREAT,FOPEN
+
+  endif ;RSX280
+
+  if UZI280
+
+stdin	equ	0
+stdout	equ	1
+stderr	equ	2
+
+; UZI280 ioctl function number get available chars
+TIOCSETN	equ	2
+
+flag_r	equ	0	; R mode for file open()
+flag_w	equ	1	; W mode for file open()
+flag_rw	equ	2	; R/W mode for file open()
+
+  endif ;UZI280
+
+  if RSX280
+
+LUNFL1	equ	1	; Emulator file access LUN #1
+LUNFL2	equ	2	; Emulator file access LUN #2
+LUNFL3	equ	3	; Emulator file access LUN #3
+LUNFL4	equ	4	; Emulator file access LUN #4
+LUNTI	equ	5	; Terminal Interface LUN (TI:)
+
+TIEFN	equ	1	; event flag for AST terminal input
+TOEFN	equ	2	; event flag for console output
+FIOEFN	equ	3	; first event flag for file I/O
+
+; Console terminal queue offsets
+TQ.IP	equ	0	; input pointer
+TQ.OP	equ	TQ.IP+1	; output pointer
+TQ.BUF	equ	TQ.OP+1	; buffer
+
+stdin	equ	LUNTI	; Use terminal
+stdout	equ	LUNTI	; Use terminal
+stderr	equ	LUNTI	; Use terminal
+
+flag_r	equ	1 SHL FM.RD	; R mode for file open()
+flag_w	equ	1 SHL FM.WR	; W mode for file open()
+flag_rw	equ	2	; R/W mode for file open() **CHECK THIS
+
+  endif ;RSX280
+	page
+;*******************************************************************
+
+	cseg	; The majority of the emulator is in the code segment
+
+; CP/M transient program .COM files are loaded here
+tpa::
+	jp	main		; command line processing
+
+	;Under UZI280 the emulated program (minus the first
+	;three bytes) are patched into this image (cpm.bin)
+	;by overlaying it into the TPA region - see PATCH.C
+	;from the UZI CPMEMU distribution.
+
+	;For RSX280 we load the CP/M .COM file into the TPA
+	;region ourselves (essentially this program behaves
+	;functionally like the CP/M Console Command Processor).
+
+; One big region to load CP/M binaries into
+
+	defs	cpmbdos-cpmtpa-3 ; Rest of TPA
+
+;*******************************************************************
+
+; BDOS emulator
+bdos::
+	jp	entry		; make the BDOS look like real CP/M
+	nop			; (it starts with a JP instruction
+	nop			; followed by 3 NOPs)
+	nop
+entry:
+	ld	hl,0
+	add	hl,sp		; get stack
+	ld	(oldstk),hl
+	ld	hl,tmpstk
+	ld	sp,hl		; new stack
+	ex	de,hl
+	ld	(arg),hl
+	ld	a,c
+	ld	(call),a 	; BDOS function number
+	push	ix
+	push	hl
+	pop	ix		; (arg) into IX
+	call	bdos2
+	pop	ix
+	ex	de,hl		; save return val in DE
+	ld	hl,(oldstk)
+	ld	sp,hl
+	ld	hl,(arg)
+	ex	de,hl		; restore orig contents of DE
+	ld	a,(call)
+	ld	c,a		; restore original contents of C
+	ld	a,l		; get return value into A
+	ld	b,h		; and B for strict compatibility
+	ret
+
+bdos2:
+	cp	maxbdosfn+1
+	ret	nc		; function number too big
+	add	a,a
+	ld	hl,bdostable	; index into table
+	add	hl,a
+	ld	hl,(hl)
+	jp	(hl)		; go there, function just returns above
+
+;*******************************************************************
+; Convert CP/M FCB name to UZI or RSX file name in variable u_name
+;
+; on entry: IX -> pointer to FCB
+;
+; on exit : HL -> pointer to string.
+;	    DE -> pointer to EOS.
+getname:
+	ld	de,u_name
+	lda	hl,(ix+fcbname)	; get address of name
+	ld	b,8
+g_l1:	ld	a,(hl)
+	inc	hl
+	cp	0
+	jr	z,g_l2
+	cp	' '
+	jr	z,g_l2
+  if UZI280
+	call	LCASE
+  endif ;UZI280
+  if RSX280
+	call	chmap
+  endif ;RSX280
+	ld	(de),a
+	inc	de
+	djnz	g_l1
+g_l2:
+	lda	hl,(ix+fcbext)	; get address of file extension
+	ld	a,(hl)
+	cp	' '
+	jr	z,g_l4		; no extension if blank
+	ld	a,'.'
+	ld	(de),a
+	inc	de
+	ld	b,3
+g_l3:
+	ld	a,(hl)
+	inc	hl
+	or	a
+	jr	z,g_l4
+	cp	' '
+	jr	z,g_l4
+  if UZI280
+	call	LCASE
+  endif ;UZI280
+  if RSX280
+	call	chmap
+  endif ;RSX280
+	ld	(de),a
+	inc	de
+	djnz	g_l3
+g_l4:
+	xor	a
+	ld	(de),a		; terminate the string with a NUL
+	ld	hl,u_name	; return pointer to name
+	ret
+
+;*******************************************************************
+; BDOS call return version number
+return_version:
+	ld	hl,022h		; pretend to be CP/M 2.2
+	ret
+
+;*******************************************************************
+; BDOS call set dma addres
+set_dma:
+	ld	hl,(arg)
+	ld	(dmaadr),hl
+	ret
+
+;*******************************************************************
+; BDOS call reset dma addres
+reset_dma:
+	ld	hl,080h
+	ld	(dmaadr),hl
+	ret
+
+;*******************************************************************
+; BDOS call console input status
+console_status:
+	call	char_avail
+	ld	a,l
+	or	h
+	ret	z		; no char available
+	ld	hl,0ffh
+	ret
+
+;*******************************************************************
+; BDOS call write string
+print_string:
+	ld	de,0
+	ld	hl,(arg)
+pr_lop:	ld	a,(hl)
+	inc	de
+	inc	hl
+	cp	'$'
+	jr	nz,pr_lop
+	dec	de		; forget the '$'
+	push	stdout
+	push	ix		; (arg)
+	push	de		; count
+	call	_write
+;	write(1, arg, cnt);
+	pop	de
+	pop	de
+	pop	de
+	ret
+
+;*******************************************************************
+; BDOS call direct console IO
+direct_console:
+	ld	a,(arg)
+	cp	0ffh
+	jr	nz,write_console
+	call	char_avail
+	cpw	hl,0
+	ret	z		; no char available, return zero
+	call	readchar
+;	if (c == '\n') c = '\r';
+	ld	a,(char)
+	cp	LF		; '\n'
+	jr	nz,di_01
+	ld	a,CR		; '\r'
+di_01:	ld	l,a
+	ld	h,0
+	ret
+
+;*******************************************************************
+; BDOS call write console
+write_console:
+	ld	a,(arg)
+;	if (arg == '\r') return(0)
+	cp	CR
+	ret	z
+	ld	(char),a
+	call	writechar
+	ret
+
+;*******************************************************************
+; BDOS call read console.
+read_console:
+	call	readchar
+	ld	a,(char)
+	cp	LF		;'\n'
+	jr	nz,rc_1
+;	if (c == '\n') c = '\r';
+	ld	a,CR		;'\r'
+rc_1:	ld	l,a
+	ld	h,0
+	ret
+
+;*******************************************************************
+; BDOS call read console buffer
+rdbuf:
+;    int nread;
+;
+;    nread = read(0, arg+2, *arg & 0xff );
+;    --nread;  /* Forget about newline */
+;    arg[nread+2] = 0;   /* Remove newline */
+;    arg[1] = nread;
+;    return(nread);
+	ld	hl,(arg)
+	cpw	hl,0
+	jr	nz,rdb_1
+	ld	hl,080h		; default dma buffer
+	ld	(arg),hl
+	ld	a,0ffh
+	jr	rdb_2
+rdb_1:	ld	a,(hl)
+rdb_2:	inc	hl
+	inc	hl
+	push	stdin
+	push	hl		; arg+2
+	ld	h,0
+	ld	l,a
+	push	hl		; *arg & 0xff
+	call	_read
+	pop	de
+	pop	de
+	pop	de
+	dec	hl		; --nread
+	ex	de,hl
+	ld	hl,(arg)
+	inc	hl
+	ld	(hl),e		; count
+	inc	hl
+	add	hl,de
+	xor	a
+	ld	(hl),a		; remove nl
+	ex	de,hl		; return nread
+	ret
+
+;*******************************************************************
+; BDOS call open file.
+;
+; On entry: IX -> pointer to FCB
+;
+openfile:
+	; test for reopen
+	ldw	hl,(ix+fcbmagic)
+	cpw	hl,MAGIC
+	jr	nz,open2
+	ldw	hl,(ix+fcbdesc)
+	push	hl
+	call	_close		; was open
+	pop	de
+open2:
+	call	getname		; convert to valid filename
+	push	hl		; string address
+	push	flag_rw
+	call	_open		; open file for R/W
+	pop	de
+	pop	de
+	cpw	hl,-1
+  if RSX280
+	jr	z,no_good	; we don't do search paths for now
+  endif
+  if UZI280
+	jr	nz,open_ok
+
+; open along search path
+;	strcpy(p_name,SRCH_PATH);
+	ld	de,p_name
+	ld	hl,SRCHPATH
+	call	strcpy		; advance string pointer
+;	strcat(p_name,getname(blk));
+	ld	hl,u_name
+	call	strcpy
+	push	p_name
+	push	flag_rw
+	call	_open		; open along new path
+	pop	de
+	pop	de
+	cpw	hl,-1
+	jp	z,no_good
+  endif ;UZI280
+
+open_ok:
+	ldw	(ix+fcbdesc),hl
+	ld	hl,MAGIC
+	ldw	(ix+fcbmagic),hl
+	ld	hl,0		; return no error
+	ldw	(ix+fcbrec),hl
+	ret
+no_good:
+	ld	hl,255		; return error
+	ret
+
+;*******************************************************************
+; CPM bdos call to make (create) a file
+;
+; On entry: IX -> pointer to FCB
+;
+makefile:
+	call	getname		; convert to valid filename
+	push	hl		; str adr
+	push	666Q
+	call	_creat		; create the file
+;    desc = creat(getname(blk), 0666);
+	pop	de
+	pop	de
+	cpw	hl,-1
+	jp	z,no_good
+	push	hl
+	call	_close		; close it
+	pop	de
+	ld	hl,u_name 	; same as second call to getname
+	push	hl
+	push	flag_rw
+	call	_open		; and reopen for R/W
+	pop	de
+	pop	de
+	cpw	hl,-1
+	jp	z,no_good
+;    blk->magic= MAGIC;
+;    blk->desc = desc;
+;    blk->rec  = 0;
+	ldw	(ix+fcbdesc),hl
+	ld	hl,MAGIC
+	ldw	(ix+fcbmagic),hl
+	ld	hl,0
+	ldw	(ix+fcbrec),hl
+	ret
+
+;*******************************************************************
+; BDOS call close file
+;
+; On entry: IX -> pointer to FCB
+;
+closefile:
+	ldw	hl,(ix+fcbdesc)
+	push	hl
+	call	_close
+	pop	de
+	cpw	hl,-1
+	jp	z,no_good
+	ld	hl,0
+	ldw	(ix+fcbmagic),hl
+	ret
+
+;*******************************************************************
+; BDOS call delete file
+;
+; On entry: IX -> pointer to FCB
+;
+delete:
+	call	getname
+	push	hl
+	call	_unlink
+	pop	de
+	cpw	hl,-1
+	jp	z,no_good
+	ld	hl,0
+	ret
+
+;*******************************************************************
+; BDOS call rename file
+;
+; On entry: IX -> pointer to FCB
+;
+  if UZI280
+;    static char cmd[40];
+;    strcpy(cmd, "mv ");
+;    strcat(cmd, getname(blk));
+;    strcat(cmd, " ");
+;    strcat(cmd, getname( (struct fcb *)&(blk->desc)));
+;    system(cmd);
+;    return(0);
+rename:
+	ld	hl,p_name
+	ld	a,'m'
+	ld	(hl),a
+	inc	hl
+	ld	a,'v'
+	ld	(hl),a
+	inc	hl
+	ld	a,' '
+	ld	(hl),a
+	inc	hl
+	push	hl		; save string pointer
+	call	getname
+	pop	de
+	call	strcpy
+	ld	a,' '
+	ld	(de),a		; p_name = "mv oldname "
+	inc	de
+	push	de		; save string pointer
+	ld	a,fcbdesc
+	add	ix,a		; ix pointer to newname-1
+	call	getname
+	pop	de
+	call	strcpy		; p_name = "mv oldname newname"
+	call	_fork		; fork new process
+	ld	(char),hl	; pid
+	cpw	hl,0
+	jr	nz,parent
+	push	shell		; we are the child
+	push	argv
+	push	(environ)
+	call	_execve		; should not return
+;	execve("/bin/sh",argv,environ)
+	pop	de
+	pop	de
+	pop	de
+	ld	hl,127
+	push	hl
+	call	_exit		; return error code 127
+
+parent:
+	push	arg
+	call	_wait
+	pop	de
+	cpw	hl,(char)
+	jr	nz,parent	; wait for exited child
+	ld	hl,(arg)	; return child exit status
+	ret
+  endif ;UZI280
+
+  if RSX280
+;**TODO
+rename:
+	ret
+  endif
+
+;*******************************************************************
+; BDOS call read file seq.
+;
+; On entry: IX -> pointer to FCB
+;
+readfile:
+	call	read128
+;    nread = read(blk->desc, dmaadr, 128);
+	cpw	hl,-1
+	jp	z,no_good
+	incw	(ix+fcbrec)
+;    if (nread < 128)
+;	dmaadr[nread] = 0x1a;
+	ld	a,l
+	cp	128
+	jr	nc,r_ok
+	ex	de,hl
+	ld	hl,(dmaadr)
+	add	hl,de
+	ld	a,EOF
+	ld	(hl),a
+r_ok:
+	ld	hl,0
+	ret
+
+;*******************************************************************
+; BDOS function write file seq.
+;
+; On entry: IX -> pointer to FCB
+;
+writefile:
+;ifdef EDITOR
+;    register i;
+;	/* write until CPM EOF (^Z) found */
+;    i = 0;
+;    while( (dmaadr[i] != 0x1A) && (i < 128) )
+;	i++;
+;    if (write(blk->desc, dmaadr, i) != i )
+;#else
+	call	write128
+;    if (write(blk->desc, dmaadr, 128) != 128 )
+	cpw	hl,128
+	jp	nz,no_good
+	incw	(ix+fcbrec)
+	ld	hl,0
+	ret
+
+;*******************************************************************
+; BDOS Random read/write. Max file length 8192 K
+;
+; On entry: IX -> pointer to FCB
+;
+setrandom:
+	ldw	hl,(ix+fcbrec)
+	ldw	(ix+fcbran),hl
+	ret
+
+readrandom:
+	call	rseek
+	call	read128
+;    nread = read(blk->desc, dmaadr, 128);
+    	call	rseek
+	cpw	hl,-1
+	jp	z,no_good
+	ld	a,l
+	cp	128		; nread < 128
+	jr	nc,rr_1
+	ld	hl,1		; EOF
+	ret
+rr_1:	ld	hl,0
+	ret
+
+
+writerandom:
+	call	rseek
+	call	write128
+;    if ( write(blk->desc, dmaadr, 128) != 128 )
+ 	call	rseek
+	cpw	hl,128
+	jp	nz,no_good
+	ld	hl,0
+	ret
+
+; record seek (128 byte) for read/write random
+rseek:
+	push	hl		; save HL
+	ldw	hl,(ix+fcbdesc)
+	push	hl
+	ldw	hl,(ix+fcbran)
+	ldw	(ix+fcbrec),hl
+	ld	e,0
+	ld	a,l
+	and	011b		; a = ranrec % 4
+	srl	a
+	ld	d,a
+	rr	e		; de = 128 * (ranrec % 4)
+	push	de
+	push	0
+	call	_seek
+;    seek(blk->desc,128*(blk->ranrec % 4), 0);  /* byte seek */
+	pop	de
+	pop	de
+	pop	de
+
+	ldw	hl,(ix+fcbdesc)
+	push	hl
+	ldw	hl,(ix+fcbran)
+	srl	h
+	rr	l		; HL / 2
+	srl	h
+	rr	l		; HL / 4
+	push	hl
+	push	3
+	call	_seek
+;    seek(blk->desc,     blk->ranrec / 4 , 3);  /* block seek (512byte) */
+	pop	de
+	pop	de
+	pop	de
+	pop	hl		; restore HL
+	ret
+
+;*******************************************************************
+; Utility routines
+
+  if UZI280
+; convert an upper case letter in register A to lower case.
+LCASE:
+	cp	'A'
+	ret	c
+	cp	'Z'+1
+	ret	nc
+	add	a,32
+	ret
+
+  endif ;UZI280
+
+  if RSX280
+
+; Convert char in A to uppercase
+UCASE:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ret
+
+; convert illegal RSX280 filename character to an 'X'.
+; (only A..Z and 0..9 are allowed).
+chmap:
+	and	07Fh		; no parity, 7-bit only
+	cp	'0'
+	jr	c,chill
+	cp	'9'+1
+	ret	c		; '0'-'9' is OK
+	cp	'A'
+	jr	c,chill
+	cp	'Z'+1
+	ret	c		; 'A'-'Z' is OK
+	cp	'a'
+	jr	c,chill
+	cp	'z'+1
+	jr	nc,chill
+	sub	a,32		; 'a'-'z' is uppercased
+	ret
+chill:	ld	a,'X'		; Illegal is an 'X'
+	ret
+
+; get next non-blank char. Returns Z flag set on end of line.
+; HL point to NUL terminated character string buffer.
+getnb:	ld	a,(hl)
+	or	a
+	ret	z
+	call	isblnk
+	ret	nz
+	inc	de
+	jr	getnb
+
+; return Z if char in A is blank.
+isblnk:	or	a
+	ret	z
+	cp	' '
+	ret	z
+	cp	TAB
+	ret
+
+  endif ;RSX280
+
+; Ccopy NUL terminated string pointed to by HL to DE
+;
+; Pointers are advanced to allow concatenation.
+; The terminating NUL is copied.
+strcpy:
+s_lo:	ld	a,(hl)
+	ld	(de),a
+	or	a
+	ret	z		; end of string
+	inc	hl
+	inc	de
+	jr	s_lo
+
+; return length of NUL terminated string pointed to by HL in A
+strlen:
+	push	bc
+	ld	c,0
+sl_lo:
+	ld	a,(hl)
+	or	a
+	jr	z,sl_12
+	inc	c
+	inc	hl
+	jr	sl_lo
+sl_12:	ld	a,c
+	pop	bc
+	ret
+
+; return number of available input chars in HL
+char_avail:
+  if UZI280
+	push	stdin
+	push	TIOCSETN
+	push	char
+	call	_ioctl
+;	ioctl(0, TIOCSETN, &char);
+	pop	de
+	pop	de
+	pop	de
+	ld	hl,(char)
+	ret
+  endif ;UZI280
+
+  if RSX280
+;**TODO
+	ret
+  endif ;RSX280
+
+ret_0:
+	ld	hl,0
+	ret
+ret_1:
+	ld	hl,1
+	ret
+
+; read one character from stdin
+readchar:
+	push	stdin
+	push	char
+	push	1
+	call	_read
+;	read(0,&char,1);
+	pop	de
+	pop	de
+	pop	de
+	ret
+
+; write one char to stdout
+writechar:
+	push	stdout
+	push	char
+	push	1
+	call	_write
+;	write(1,&char,1);
+	pop	de
+	pop	de
+	pop	de
+	ret
+
+; read 128 bytes
+read128:
+	ldw	hl,(ix+fcbdesc)
+	push	hl
+	push	(dmaadr)
+	push	128
+	call	_read
+;    nread = read(blk->desc, dmaadr, 128);
+	pop	de
+	pop	de
+	pop	de
+	ret
+
+; write 128 bytes
+write128:
+	ldw	hl,(ix+fcbdesc)
+	push	hl
+	push	(dmaadr)
+	push	128
+	call	_write
+;    nread = write(blk->desc, dmaadr, 128);
+	pop	de
+	pop	de
+	pop	de
+	ret
+
+;*******************************************************************
+; CP/M Emulator set-up
+;
+; main(argc, argv)
+main::
+  if UZI280
+	ld	hl,4
+	add	hl,sp
+	ld	(environ),hl	; save pointer to environ
+	pop	hl		; get argv into HL
+	pop	de		; get argc into DE
+  endif
+
+  if RSX280
+
+	; We're running under RSX280
+
+	ld	sp,tmpstk	; switch to local stack
+	xor	a
+	ld	(ttlc),a	; force input to uppercase
+
+	ld	hl,luntb	; clear LUN table of
+	ld	b,luntbsz	;  open files (all files
+init_0:	ld	(hl),a		;  are closed)
+	inc	hl
+	djnz	init_0
+
+	ldw	(CCFLG),0	; enable ctrl-C break
+	ld	ix,TTQ
+
+	call	qinit		; set-up terminal queue
+
+	ld	de,'TI'
+	ld	c,0
+	ld	b,LUNTI
+	SC	.ALUN		; assign TI: to LUNTI
+	call	ATTACH		; attach with ASTs
+	call	TTCLR		; clear output buffer
+
+	call	$PRINT
+	defb	CR,LF,'RSX280 CP/M emulator ',0
+	ld	hl,VERSION
+	call	$MSGHL
+	call	$CRLF
+
+reentry:
+	call	$FLINP		; flush input buffer
+	call	$PRINT		; output prompt
+	defb	'X>',0
+
+	ld	hl,ttibuf
+	ld	(ttiptr),hl	; reset line pointer
+	ld	e,ttibsz
+	call	GETLN		; read a command line
+	jp	c,$EXIT		; if ^C or ^Z typed we're done
+
+	ld	hl,ttibuf	; Parse the input line
+	call	getnb		; skip white-space
+	jr	z,reentry	; there was nothing (EOL reached)
+
+	; HL points to the first non-blank character
+	ld	ix,p_argv	; IX -> first of the argv pointers
+	ldw	(ix+0),hl	; save argv[0] (program name)
+	ld	c,0		; for computing argc
+
+arg_0:	ld	a,(hl)		; scan for white-space
+	or	a
+	jr	z,arg_2		; end of line
+	cp	' '
+	jr	z,arg_1		; a space found
+	inc	hl
+	jr	arg_0
+
+arg_1:	ld	(hl),0		; replace the space with a NUL
+	inc	hl
+	inc	ix
+	inc	ix
+	ldw	(ix+0),hl	; save next argv pointer
+	inc	c		; bump argc
+	ld	a,c
+	cp	9		; Only room for argv[0..9]
+	jr	c,arg_0
+
+arg_2:	ld	ix,p_argv	; IX points to argv[0]
+	ld	d,0		; DE is argc
+	ld	e,c
+
+;** show array contents
+
+arg_3:
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'argv contents',CR,LF,0
+	ldw	hl,(ix+0)
+	call	$MSGHL
+	call	$CRLF
+	ld	a,c
+	or	a
+	jr	z,arg_4
+	dec	c
+	inc	ix
+	inc	ix
+	jr	arg_3
+arg_4:
+    endif ;DEBUG
+
+	ld	hl,(p_argv)	; pointer to argv[0]
+	ld	de,COMFCB
+	call	strcpy		; copy it into filename
+	ld	hl,DOTCOM
+	call	strcpy		; add .COM file type
+
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'Opening ',0
+	ld	hl,COMFCB
+	call	$MSGHL
+	call	$CRLF
+    endif ;DEBUG
+
+	push	COMFCB		; Open the COM file
+	push	flag_r
+	call	_open
+	pop	de		; clean-up stack
+	pop	de
+
+	cpw	hl,-1
+	jr	nz,arg_5	; opened
+
+	ld	hl,(p_argv)	; not found
+	call	$CRLF
+	call	$MSGHL		; output argv[0] followed
+	call	$PRINT		;  by a '?' for unknown
+	defb	'?',CR,LF,0	;  command
+	jp	reentry
+
+arg_5:				; HL contains the LUN of opened file
+
+	jp	reentry
+;**TODO - open and read .COM file into TPA
+
+  endif
+
+	;argv in HL
+	;argc in DE
+	ld	a,e
+	cp	1
+	jr	nz,m_33
+	xor	a
+	ld	(080h),a
+	jp	m_2		; no file arguments
+m_33:	ld	bc,0		; length counter
+	push	bc
+	ld	de,082h		; CPM command line buffer
+	push	hl		; save argv pointer
+m_3:	pop	hl		; hl pointer to argv
+	inc	hl
+	inc	hl		; point to next argv
+	push	hl		; save argv pointer
+	ld	hl,(hl)
+	ld	a,(hl)
+	or	a
+	jr	z,m_55		; no more args
+	push	hl		; save argv[i]
+	call	strcpy		; copy argument from (HL) to (DE)
+	ld	a,' '		; strcpy advances DE
+	ld	(de),a
+	inc	de
+	pop	hl		; get back argv
+	call	strlen		; get length of argv[1] into a
+	inc	a
+	pop	hl
+	pop	bc		; add string length
+	add	a,c
+	ld	c,a
+	push	bc		; save length counter
+	push	hl
+	jr	m_3
+m_55:	pop	hl		; forget argv pointer
+	pop	bc		; get length
+	xor	a
+	ld	(de),a		; terminate the string
+	ld	a,c		; get length
+	ld	(080h),a
+	ld	a,' '
+	ld	(081h),a
+m_2:
+	ld	hl,080h
+	ld	(dmaadr),hl
+
+	; make BDOS and BIOS entry points
+	ld	a,0c3h
+	ld	(0000),a
+	ld	(0005),a
+	ld	hl,bios
+	ld	(0001),hl
+	ld	hl,bdos
+	ld	(0006),hl
+
+	ld	a,0ffh		; enable uppercase input
+	ld	(ttlc),a
+
+	ld	sp,hl		; set stack pointer to BDOS entry
+
+  if UZI280
+
+FIRST3::
+; For UZI, this program is already patched to contain the program
+; (with the first three bytes patched)
+;
+; original instruction of patched program at address 100-103h
+; and jump into CP/M transient program just loaded
+;	jp	04b0H	; zde13
+	jp	0103h	; Hitech C
+;	ex	de,hl
+;	jp	0162h	; slr asm
+;	jp	20e2h	; turbo pascal
+;	jp	20c4h	; multiplan
+;	jp	5d71h	; mbasic
+  endif ;UZI280
+
+  if RSX280
+; Program loaded - off we go!
+	ld	hl,done		; Push a return address
+	push	hl		; to return to the CPM> prompt
+	jp	tpa		; Start transient program
+
+;*******************************************************************
+; Detach console terminal
+DETACH: ld	hl,IO.DET	; Change function code to detach
+	ld	(attqio+Q.FUNC),hl
+	; fall through
+
+; Attach console terminal with ASTs
+ATTACH:	ld	hl,attqio
+	SC	.QIO		; .QIOW
+	ret	c		; if queuing failed
+	ld	a,(QIOSB)	; fetch return code
+	or	a		; clear carry
+	ret	z
+	scf
+	ret
+
+;*******************************************************************
+; Unsolicited character input AST routine
+TTAST:	ex	(sp),hl		; fetch character from stack, save HL
+	push	de
+	push	bc
+	push	ix
+	ld	ix,TTQ
+	ld	c,l		; get char into reg C for qput
+	ld	a,c
+	cp	03h		; ^C ?
+	jr	nz,ast1
+	call	qinit		; clear input queue if yes
+	ld	hl,CCFLG+1
+	set	7,(hl)		; set ^C flag
+ast1:	call	qput		; store char in queue
+	ld	e,TIEFN
+	SC	.SETF		; set event flag
+	pop	ix
+	pop	bc
+	pop	de
+	pop	hl
+	SC	.ASTX		; exit AST
+
+;*******************************************************************
+; Single-character input, no echo
+
+$TTGC:	call	$FLUSH		; send pending output to terminal
+	push	ix
+	push	hl
+	push	de
+	push	bc
+ci1:	ld	e,TIEFN
+	SC	.CLEF		; clear event flag
+	ld	ix,TTQ
+	call	qget		; get char from input queue
+	jr	nc,ci2
+	ld	e,TIEFN		; if none ready
+;;	SC	.WTSE		;  then wait
+	SC	.STSE
+	jr	ci1
+ci2:	ld	hl,ttlc
+	bit	0,(hl)		; translate lowercase to uppercase?
+	call	z,UCASE		; convert character if yes
+	pop	bc
+	pop	de
+	pop	hl
+	pop	ix
+	ret
+
+;*******************************************************************
+; Reset terminal input queue
+qinit:	xor	a
+	ld	(ix+TQ.IP),a
+	ld	(ix+TQ.OP),a
+	ret
+
+;*******************************************************************
+; Fetch character from queue
+qget:	ld	a,(ix+TQ.OP)
+	cp	(ix+TQ.IP)
+	scf
+	ret	z		; return if buffer empty
+	ld	e,a
+	inc	a
+	and	3Fh
+	ld	(ix+TQ.OP),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	a,(ix+TQ.BUF)	; get char
+	pop	ix
+	or	a
+	ret
+
+;*******************************************************************
+; Store character in queue
+qput:	ld	a,(ix+TQ.IP)
+	ld	e,a
+	inc	a
+	and	3Fh
+	cp	(ix+TQ.OP)
+	scf
+	ret	z		; return if buffer full
+	ld	(ix+TQ.IP),a
+	ld	d,0
+	push	ix
+	add	ix,de
+	ld	(ix+TQ.BUF),c	; store char
+	pop	ix
+	or	a
+	ret
+
+;*******************************************************************
+; Flush (discard) input buffer
+$FLINP: push	ix
+	push	hl
+	ld	ix,TTQ
+	call	qinit		; reset terminal input queue
+	ld	hl,ttibuf
+	ld	(ttiptr),hl	; clear input line
+	ld	(hl),EOF
+	pop	hl
+	pop	ix
+	ret
+
+;*******************************************************************
+; Character input (line-buffered)
+$TTIN:	call	$FLUSH		; flush any pending output
+	push	hl
+tt0:	ld	hl,(ttiptr)	; get line pointer into HL
+	ld	a,(hl)		; fetch character
+	cp	EOF		; end of line?
+	jr	nz,tt1		; return if not
+	push	de
+	push	bc
+	ld	hl,ttibuf
+	ld	(ttiptr),hl	; else reset line pointer
+	ld	e,ttibsz
+	call	GETLN		; and collect a new line
+	pop	bc
+	pop	de
+	jr	tt0		; loop
+tt1:	inc	hl		; advance line pointer
+	ld	(ttiptr),hl
+	pop	hl
+	or	a
+	ret
+
+;*******************************************************************
+; Read line from terminal into HL buffer, max length in E
+;
+; This routine permits some rudimentary line editing with
+; character delete (BS or DEL), line delete (^U) and retype
+; (^R) functions
+
+GETLN:	ld	b,1		; B contains the character position
+	ld	(glbpsv),hl	; save buffer pointer for ^R
+gln1:	call	$TTGC
+	cp	BS		; backspace?
+	jr	z,del
+	cp	RUBOUT		; DEL?
+	jr	z,del		; handle like backspace
+	cp	CR		; CR?
+	jr	z,eol
+	ld	c,a		; save char in C
+	ld	a,b		; check length
+	cp	e		; maximum count reached?
+	jr	nc,glnerr	; jump if yes
+	ld	a,c		; check character
+	cp	' '		; control char?
+	jr	nc,gln2		; jump if not
+	ld	a,'^'		; else echo it as ^x
+	call	$TTOUT
+	ld	a,c
+	add	a,'@'
+	call	$TTOUT
+	ld	a,c
+	cp	3		; ^C?
+	jr	z,ctrlc
+	cp	EOF		; ^Z?
+	jr	z,ctrlz
+	cp	15h		; ^U?
+	jr	z,ctrlu
+	cp	12h		; ^R?
+	jr	z,glshow
+	jr	gln3
+
+gln2:	call	$TTOUT		; echo printable character
+gln3:	ld	(hl),c		; store it
+	inc	hl
+	inc	b
+	jr	gln1
+
+del:	dec	b		; backup one char
+	jr	z,GETLN		; if zero, start again
+	call	bcksp
+	dec	hl
+	dec	c
+	ld	a,(hl)		; if it was a control char
+	cp	' '		;  then we need to erase
+	call	c,bcksp		;   also the '^'
+	jr	gln1
+
+glshow:	push	hl
+	ld	(hl),0
+	call	$CRLF
+	ld	hl,(glbpsv)	; re-type buffer
+	call	$MSGHL
+	pop	hl
+	jr	gln1
+
+bcksp:	call	$PRINT
+	defb	BS,' ',BS,0
+	ret
+
+glnerr: ld	a,7		; ring the BELL
+	call	$TTOUT
+	jr	gln1
+
+ctrlu:	dec	b		; ^U discards current input
+	ld	c,b		;  and restarts input
+	ld	b,0
+	or	a		; move the pointer back to
+	sbc	hl,bc		;  the beginning of buffer
+	call	$CRLF		; new line
+	jr	GETLN
+
+ctrlc:	ld	d,c		; ^C discards input
+	dec	b		;  and returns EOF
+	ld	c,b		;  (carry flag set)
+	ld	b,0
+	or	a
+	sbc	hl,bc
+	ld	a,d
+ctrlz:	scf
+eol:	push	af
+	ld	(hl),a		; store terminator char
+	call	$CRLF		; and advance line
+	inc	hl
+	ld	(hl),0		; string terminator
+	pop	af
+	ret
+
+;*******************************************************************
+; Character output (buffered)
+$TTOUT: push	hl
+	ld	hl,(ttoptr)
+	ld	(hl),a		; store char in buffer
+	inc	hl		; advance pointer
+	ld	(ttoptr),hl
+	pop	hl
+	push	bc
+	ld	c,a
+	ld	a,(ttocnt)
+	inc	a		; increase byte counter
+	ld	(ttocnt),a
+	cp	128		; buffer full?
+	ld	a,c
+	pop	bc
+	jr	nc,$FLUSH	; output it if yes
+	cp	LF ;CR		; CR?
+	ret	nz		; return if not, else flush buffer
+
+;*******************************************************************
+; Flush any queued output to console
+$FLUSH: ld	a,(ttocnt)
+	or	a		; check in case the function is called
+	ret	z		; separately
+	push	bc
+	push	de
+	push	hl
+snd0:	xor	a
+	ld	(ttoqio+Q.SUBF),a
+	ld	hl,(ttocnt)	; bytes to write
+	ld	h,a
+	ld	(ttoqio+Q.LEN),hl
+	ld	hl,0
+	ld	(QIOSB+2),hl	; clear counter of bytes sent
+	ld	hl,ttoqio
+	SC	.QIO		; .QIOW
+	ld	hl,(QIOSB+2)	; fetch byte count
+	ld	a,h
+	or	l		; anything sent?
+	jr	z,snd0		; keep trying if not
+	ld	a,(ttocnt)
+	sub	l		; all bytes sent?
+	ld	(ttocnt),a
+	ld	de,ttobuf
+	jr	z,snd1		; return if yes
+	ld	c,a		; else prepare counter of bytes to move
+	ld	b,0
+	ld	h,b		; just in case
+	add	hl,de		; HL = src (ttobuf+sent), DE = dst (ttobuf)
+	ldir			; shift buffer, we'll send the remainder later
+snd1:	ld	(ttoptr),de	; set new buffer pointer (ttobuf+diff)
+	pop	hl
+	pop	de
+	pop	bc
+	ret
+
+;*******************************************************************
+TTCLR:	push	hl
+	ld	hl,ttobuf
+	ld	(ttoptr),hl
+	xor	a
+	ld	(ttocnt),a
+	pop	hl
+	ret
+
+;*******************************************************************
+;Newline
+$CRLF:	call	$PRINT
+	defb	CR,LF,0
+	ret
+
+;Print in-line message terminated by a NUL
+$PRINT:
+	ex	(sp),hl
+	call	$MSGHL
+	ex	(sp),hl
+	ret
+
+;Print message pointed to by HL terminated by a NUL
+$MSGHL:	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	call	$TTOUT
+	jr	$MSGHL
+
+;*******************************************************************
+; Exit program
+$EXIT:	call	$FLINP		; flush input buffer
+	ld	c,LUNTI
+	call	DETACH
+	ld	hl,EX.SUC	; Exit to monitor with success
+	SC	.EXIT
+
+;*******************************************************************
+iseol:	or	a
+	ret	z
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	EOF
+	ret
+
+  endif ;RSX280
+
+;*******************************************************************
+  if UZI280
+;
+;   Use system calls for UZI280 (unix edition 7)
+;
+; _exit(int val)
+_exit:
+	SC 0
+	jr	DISP
+; open(char *name,int flag)
+_open:
+	SC 1
+	jr	DISP
+; close(int index)
+_close:
+	SC 2
+	jr	DISP
+; creat(char *name,int mode)
+_creat:
+	SC 3
+	jr	DISP
+; unlink(char *path)
+_unlink:
+	SC 6
+	jr	DISP
+; read(int d, char *buf,unsigned nbytes)
+_read:
+	SC 7
+	jr	DISP
+; write(int d, char *buf,unsigned nbytes)
+_write:
+	SC 8
+	jr	DISP
+; 16 bit seek.
+; seek(int file,offset,flag)
+_seek:
+	SC 9
+	jr	DISP
+; execve(char *name,*argv[],*envp[])
+_execve:
+	SC 23
+	jr	DISP
+; wait(int *statloc)
+_wait:
+	SC 24
+	jr	DISP
+; ioctl(int fd,request,char *data
+_ioctl:
+	SC 29
+	jr	DISP
+; fork()
+_fork:
+	SC 32
+DISP:	jr	nc,NOERR
+	ld	(errno),hl
+	ld	hl,-1
+NOERR:	ret
+
+  endif ;UZI280
+
+;*******************************************************************
+  if RSX280
+;
+;   Translate into system calls for RSX280
+;
+; _exit(int val)
+_exit:
+	ldw	hl,(sp+2)	; return status on stack
+	SC	.EXIT
+	; we shouldn't be here now
+	jp	DISP
+
+; int open(char *name,int flag)
+;
+; Parameters passed on the stack
+;
+; Returns the LUN of the open file in HL (or -1 on error)
+;
+_open:
+	ld	hl,luntb	; look for an available LUN
+	ld	bc,1
+op_0:	ld	a,(hl)
+	or	a
+	jr	z,op_1		; found LUN in BC is free
+	inc	hl
+	inc	c
+	ld	a,c
+	cp	luntbsz+1
+	jr	c,op_0
+
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'OPEN-F-No free LUN',0
+    endif ;DEBUG
+
+op_err:	ld	hl,-1		; no free LUNs, return error
+	scf
+	ret
+
+op_1:	set	0,(hl)		; Mark this lun as unavailable
+	; LUN is in BC
+
+	ld	de,fsrsz
+	ld	iy,fsr_1	; Which file storage region to use?
+
+op_2:	dec	bc
+	ld	a,c
+	or	a
+	jr	z,op_3
+	add	iy,de
+	jr	op_2
+
+op_3:	; IY points to the file storage region for this LUN
+	ldw	hl,(sp+4)	; get flag
+	ld	(iy+2),l	; set file access mode bit
+
+	ldw	hl,(iy+FC.FDB)	; get this file's FDB address
+	push	hl		;  into IX
+	pop	ix
+
+	ldw	hl,(sp+2)	; point to name
+	call	PFN		; parse name into fcb
+	jr	nc,op_4		; It parsed correctly
+
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%OPEN-F-Illegal filename',0
+    endif ;DEBUG
+
+	jr	op_err		; illegal filename
+
+op_4:	push	iy		; get fsr into IX
+	pop	ix
+
+	ldw	hl,(sp+4)	; is it an open for Read?
+	ld	a,l
+	cp	1 SHL FM.RD
+	jr	z,op_5		; yes, open existing file
+
+	ld	de,0
+	xor	a
+	ld	c,a
+	call	FCREAT		; create a new file
+	jr	op_6
+
+op_5:	call	FOPEN		; open existing file
+
+; Carry SET and HL = -1 if an error opening
+op_6:	jp	c,DISP
+
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%OPEN-I-File opened',0
+    endif ;DEBUG
+
+	ld	h,0
+	ld	l,(ix+3)	; return the LUN of opened file
+	or	a		;  from file storage region
+	jp	NOERR
+
+; close(int index)
+_close:
+	SC 2
+	jp	DISP
+
+; creat(char *name,int mode)
+_creat:
+	SC 3
+	jp	DISP
+
+; unlink(char *path)
+_unlink:
+	SC 6
+	jp	DISP
+
+; read(int d, char *buf,unsigned nbytes)
+_read:
+	ldw	hl,(sp+2)	; d
+	ldw	ix,(sp+4)	; point to buf
+
+	cpw	hl,LUNTI	; is it the console LUN?
+	jr	nz,_rd_0	; no
+
+_rdtty:
+	ldw	hl,(sp+6)	; nbytes
+	ld	a,h
+	or	l
+	jr	z,DISP		; no more
+	call	$TTGC		; get a character
+	ld	(ix+0),a	; into buffer
+	inc	ix
+	dec	hl
+	jr	_rdtty
+
+_rd_0:	; read from a file - LUN is in HL
+
+;**TODO
+
+	SC 7
+	jp	DISP
+
+; write(int d, char *buf,unsigned nbytes)
+_write:
+	SC 8
+	jp	DISP
+
+; 16 bit seek.
+; seek(int file,offset,flag)
+_seek:
+	SC 9
+
+DISP:	jr	nc,NOERR
+	ld	(errno),hl
+	ld	hl,-1
+NOERR:	ret
+  endif ;RSX280
+
+;*******************************************************************
+; The following BIOS routines are located in
+; the BDOS area to maximise available memory
+
+; BIOS console input
+_conin:
+	call	readchar
+;	if (arg == '\n')
+;	    arg = '\r';
+	ld	a,(char)
+	cp	LF		;'\n'
+	ret	nz
+	ld	a,CR		;'\r'
+	ret
+
+; BIOS console output
+_conout:
+	ld	a,c
+	ld	(char),a
+	jp	writechar
+
+
+; BIOS console input status
+_conist:
+	call	char_avail
+	ld	a,h
+	or	l
+	ret	z		; no char available
+	ld	a,0ffh
+	ret
+
+; Dummy routine for unsupported BIOS calls
+dummy:
+	push	stderr
+	push	biosmsg
+	push	biosml		; length of message
+	call	_write
+	pop	de
+	pop	de
+	pop	de
+; write(2,"Illegal BIOS call\n",18);
+; 	fall through
+
+; end of program run
+  if UZI280
+	; UZI exits to command shell
+done:
+	ld	hl,(080h)	; HI-TECH C stores its exit value at 80h
+	push	hl
+	call	_exit
+  endif ;UZI280
+
+  if RSX280
+	;RSX prompts for next CP/M program
+done:
+	ld	sp,tmpstk	; back to our stack
+	jp	reentry
+  endif ; RSX280
+
+;*******************************************************************
+  if UZI280
+
+	dseg			; only UZI is using DSEG for now
+
+; additional search path for file open
+SRCHPATH:	defb	"/sys/lib/HiTech/",0
+;SRCHPATH:	defb	"/CPM/bin/",0
+
+; strings used for execve call
+shell:	defb	"/bin/sh",0
+shell1:	defb	"sh",0
+shell2:	defb	"-c",0
+
+argv:	defw	shell1		; "sh"
+	defw	shell2		; "-c"
+	defw	p_name		; "mv oldname newname"
+	defw	0		; end of argv
+
+  endif ;UZI280
+
+  if UZI280
+
+u_name:	defs	16		; holds converted uzi file name
+p_name:	defs	40		; file name for path search and execve()
+environ:	defs	2
+
+  endif ;UZI280
+
+; CP/M BDOS emulator variables
+
+biosmsg:	defb	"Illegal BIOS call",LF,0
+biosml	equ	$-biosmsg-1
+
+oldstk:	defs	2
+arg:	defs	2
+call:	defs	2
+dmaadr:	defs	2
+char:	defs	2
+errno:	defs	2
+
+  if RSX280
+
+	cseg
+
+VERSION: defb	'V0.99 [testing]',0
+
+p_argv:	defs	10*2		; Room for 10 pointers (0..9)
+
+COMFCB:	defs	FNSZ		; RSX280 filespec of CP/M .COM file
+
+DOTCOM:	defb	'.COM',0
+
+u_name:	defs	16		; holds converted RSX file name
+
+; QIO commands for console terminal
+IO.ATA	equ	IO.ATT OR (TF.AST SHL 8)	; attach with AST
+;
+attqio:	QIOW$	IO.ATA,LUNTI,TOEFN,QIOSB,,<TTAST>	; attach console
+ttoqio:	QIOW$	IO.WVB,LUNTI,TOEFN,QIOSB,,<ttobuf,,,,0>	; console output
+
+; QIO status
+QIOSB:	defs	4
+
+luntbsz	equ	4
+luntb:	defs	luntbsz		; LUN "in-use" table
+				; One byte for each LUN 1-4
+				; Non-zero means file open
+
+; Console terminal input queue
+TTQ:	defs	1		;input position
+	defs	1		;output position
+	defs	64		;buffer
+
+ttlc:	defs	1		;lowercase input flag
+
+; Console input line
+ttibsz	equ	126
+ttibuf:	defs	ttibsz+2	;input line buffer (and space for CR and NUL)
+ttiptr:	defs	2		;input line pointer
+
+; Console output line
+glbpsv:	defs	2
+ttocnt:	defb	0		;output count
+ttoptr:	defw	ttobuf		;output pointer
+ttobuf:	defs	128		;buffer
+
+CCFLG:	defs	2		;ctrl-C break flag
+
+  endif ;RSX280
+
+; Stack
+  if RSX280
+
+	cseg
+
+    if (($-tpa) and 1)	; Even address boundary
+	defs	1
+    endif
+
+	defs	256
+  endif
+  if UZI280
+
+	dseg
+
+	defs	30
+  endif
+
+tmpstk:
+
+;*******************************************************************
+; CP/M File Control Block offsets
+
+;struct	fcb {
+;/*0*/	char	drive;		/* drive code */
+;/*1*/	char	name[8];	/* file name */
+;/*9*/	char	ext[3];		/* file type */
+;/*12*/	char	ex;		/* file extent */
+;/*13*/	int	magic;		/* UZI280/RSX280 open file magic number */
+;/*15*/	char	rec;		/* number of records in present extent */
+;/*16*/	char	desc;		/* UZI280 file number/RSX280 LUN */
+;/*17*/	char	dm[15];		/* CP/M disk map */
+;/*32*/	char	nr;		/* next record to read or write */
+;/*33*/	unsigned ranrec;	/* random record number (24 bit no. ) */
+;/*35*/	char	hr_rec;		/*   "       "   high byte */
+;};
+fcbname	equ	1
+fcbext	equ	9
+fcbmagic equ	13
+fcbdesc	equ	16
+fcbrec	equ	20		; internal record counter read/write.
+fcbran	equ	33
+
+; magic number of open file
+; (emulator writes this to S1 and S2 bytes in a CP/M FCB when a file is open)
+MAGIC		equ	12345
+
+; BDOS function dispatch table (keep this in cseg)
+	cseg
+
+bdostable:
+	defw	done		; 0 - system reset
+	defw	read_console	; 1 - console read
+	defw	write_console	; 2 - console write
+	defw	no_good		; 3 - reader input
+	defw	no_good		; 4 - punch output
+	defw	no_good		; 5 - list output
+	defw	direct_console	; 6 - direct console I/O
+	defw	no_good		; 7 - get IO byte
+	defw	no_good		; 8 - set IO byte
+	defw	print_string	; 9 - print string
+	defw	rdbuf		; 10 - read console buffer
+	defw	console_status	; 11 - get console status
+	defw	return_version	; 12 - get version
+	defw	reset_dma	; 13 - reset disk system
+	defw	ret_0		; 14 - select disk
+	defw	openfile 	; 15 - open file
+	defw	closefile 	; 16 - close file
+	defw	no_good		; 17 - search for first file
+	defw	no_good		; 18 - search for next file
+	defw	delete		; 19 - delete file
+	defw	readfile	; 20 - read next record
+	defw	writefile	; 21 - write next record
+	defw	makefile	; 22 - create file
+	defw	rename		; 23 - rename file
+	defw	ret_1		; 24 - get login vector
+	defw	ret_0		; 25 - get current disk
+	defw	set_dma		; 26 - set disk DMA address
+	defw	no_good		; 27 - get allocation vector
+	defw	no_good		; 28 - write protect disk
+	defw	no_good		; 29 - get read-only vector
+	defw	no_good		; 30 - set file attributes
+	defw	no_good		; 31 - get addr(dpb params)
+	defw	ret_0		; 32 - set/get user code
+	defw	readrandom	; 33 - read random
+	defw	writerandom	; 34 - write random
+	defw	no_good		; 35 - compute file size
+	defw	setrandom	; 36 - set random record
+	defw	reset_dma 	; 37 - reset drive
+	defw	writerandom	; 38 - write random with zero fill
+; end of BDOS dispatch table
+
+maxbdosfn equ	(($-bdostable)/2)-1 ; should be 38 (026h)
+
+	page
+;
+; First try of a direct bios call implementation
+;
+	cseg
+
+tobios	equ	(cpmbios-cpmtpa)-($-tpa)
+  if tobios and 8000h	; negative (sign bit on)
+    if2
+	.printx /ERROR: BDOS area overflowed into BIOS area/
+    endif
+  else
+	defs	tobios
+  endif
+
+;*******************************************************************
+; The BIOS jump table.
+; Routines are located above to minimise
+; what would otherwise be wasted memory space.
+
+bios::	jp	done		;0 Cold Boot
+	jp	done		;1 Warm Boot
+	jp	_conist		;2 Console Input Status
+	jp	_conin		;3 Console Input
+	jp	_conout		;4 Console Output
+	jp	dummy		;5 List Output
+	jp	dummy		;6 Punch Output
+	jp	dummy		;7 Reader Input
+	jp	dummy		;8 Home
+	jp	dummy		;9 Select Disk
+	jp	dummy		;10 Set Track
+	jp	dummy		;11 Set Sector
+	jp	dummy		;12 Set DMA Transfer Address
+	jp	dummy		;13 Read Sector
+	jp	dummy		;14 Write Sector
+	jp	dummy		;15 List Output Status
+	jp	dummy		;16 Sector Translate
+
+  if RSX280
+
+; We use FCS to access files.  These are the  File Storage Regions for
+; each of the LUNs that are used (only 4 at present)
+
+; Note: The file access mode bits are overwritten by the _open
+; routine and we use a common event flag for access to all files
+
+fsr_1:	FSR$	,<1 SHL FM.RD>,LUNFL1,FIOEFN
+fsrsz	equ	$-fsr_1
+fsr_2:	FSR$	,<1 SHL FM.WR>,LUNFL2,FIOEFN
+fsr_3:	FSR$	,<1 SHL FM.WR>,LUNFL3,FIOEFN
+fsr_4:	FSR$	,<1 SHL FM.WR>,LUNFL4,FIOEFN
+
+  endif ;RSX280
+
+	end
