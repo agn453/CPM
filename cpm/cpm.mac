@@ -746,23 +746,19 @@ chmap:
 chill:	ld	a,'X'		; Illegal is an 'X'
 	ret
 
-; get next non-blank char. Returns Z flag set on end of line.
-; HL point to NUL terminated character string buffer.
+; Get next non-blank char.
+;
+; On entry: HL -> character string
+; On exit:  HL -> first non-space character in string
+;	    Z flag set if end of string reached
+;
 getnb:	ld	a,(hl)
 	or	a
 	ret	z
-	call	isblnk
+	cp	' '
 	ret	nz
 	inc	hl
 	jr	getnb
-
-; return Z if char in A is blank.
-isblnk:	or	a
-	ret	z
-	cp	' '
-	ret	z
-	cp	TAB
-	ret
 
   endif ;RSX280
 
@@ -929,53 +925,14 @@ reentry:
 
 	ld	hl,ttibuf	; Parse the input line
 	call	getnb		; skip white-space
-	jr	z,reentry	; there was nothing (EOL reached)
+	jr	z,reentry	; there was nothing
+	cp	CR		; EOL?
+	jr	z,reentry
 
 	; HL points to the first non-blank character
 	ld	ix,p_argv	; IX -> first of the argv pointers
-	ldw	(ix+0),hl	; save argv[0] (program name)
-	ld	c,0		; for computing argc
-
-arg_0:	ld	a,(hl)		; scan for white-space
-	or	a
-	jr	z,arg_2		; end of line
-	cp	' '
-	jr	z,arg_1		; a space found
-	inc	hl
-	jr	arg_0
-
-arg_1:	ld	(hl),0		; replace the space with a NUL
-	inc	hl
-	inc	ix
-	inc	ix
-	ldw	(ix+0),hl	; save next argv pointer
-	inc	c		; bump argc
-	ld	a,c
-	cp	9		; Only room for argv[0..9]
-	jr	c,arg_0
-
-arg_2:	ld	ix,p_argv	; IX points to argv[0]
-	ld	d,0		; DE is argc
-	ld	e,c
-
-;** show array contents
-
-arg_3:
-    if DEBUG
-	call	$PRINT
-	defb	CR,LF,'argv contents',CR,LF,0
-	ldw	hl,(ix+0)
-	call	$MSGHL
-	call	$CRLF
-	ld	a,c
-	or	a
-	jr	z,arg_4
-	dec	c
-	inc	ix
-	inc	ix
-	jr	arg_3
-arg_4:
-    endif ;DEBUG
+	call	getargs		; Split line into argv elements
+	ld	(argc),de	; save argc
 
 	ld	hl,(p_argv)	; pointer to argv[0]
 	ld	de,COMFCB
@@ -985,11 +942,14 @@ arg_4:
 
     if DEBUG
 	call	$PRINT
-	defb	CR,LF,'Opening ',0
+	defb	CR,LF,'Opening "',0
 	ld	hl,COMFCB
 	call	$MSGHL
-	call	$CRLF
+	call	$PRINT
+	defb	'"',CR,LF,0
     endif ;DEBUG
+
+	jp	reentry ;**TEMP
 
 	push	COMFCB		; Open the COM file
 	push	flag_r
@@ -1136,6 +1096,73 @@ ast1:	call	qput		; store char in queue
 	pop	de
 	pop	hl
 	SC	.ASTX		; exit AST
+
+;*******************************************************************
+; Get argv[] and argc
+;
+; On entry: IX -> array of 10 argv pointers
+;
+; Returns:  argc in DE
+;
+getargs:
+	ldw	(ix+0),hl	; save argv[0] (program name)
+	ld	c,0		; for computing argc
+
+arg_0:	ld	a,(hl)		; scan for white-space
+	or	a
+	jr	z,arg_2		; empty string
+	cp	CR
+	jr	z,arg_1a	; CR
+	cp	' '
+	jr	z,arg_1		; a space found
+	inc	hl
+	jr	arg_0
+
+arg_1:	ld	(hl),0		; replace the space with a NUL
+	inc	hl
+	inc	ix
+	inc	ix
+	ldw	(ix+0),hl	; save next argv pointer
+	inc	c		; bump argc
+	ld	a,c
+	cp	9		; Only room for argv[0..9]
+	jr	c,arg_0
+
+arg_1b:	ld	a,(hl)		; Look for CR
+	or	a
+	jr	z,arg_2
+	cp	CR
+	jr	z,arg_1a
+	inc	hl
+	jr	arg_1b
+
+arg_1a:	ld	(hl),0
+
+arg_2:	ld	ix,p_argv	; IX points to argv[0]
+	ld	d,0		; DE is argc
+	ld	e,c
+
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'argv contents',CR,LF,0
+	ldw	hl,(ix+0)
+arg_3:
+	call	$PRINT
+	defb	'"',0
+	call	$MSGHL
+	call	$PRINT
+	defb	'"',CR,LF,0
+	ld	a,c
+	or	a
+	jr	z,arg_4
+	dec	c
+	inc	ix
+	inc	ix
+	jr	arg_3
+arg_4:
+    endif ;DEBUG
+
+	ret
 
 ;*******************************************************************
 ; Single-character input, no echo
@@ -1767,6 +1794,7 @@ errno:	defs	2
 
 VERSION: defb	'V0.99 [testing]',0
 
+argc:	defs	2
 p_argv:	defs	10*2		; Room for 10 pointers (0..9)
 
 COMFCB:	defs	FNSZ		; RSX280 filespec of CP/M .COM file
