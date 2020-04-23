@@ -1536,13 +1536,6 @@ NOERR:	ret
 ;
 ;   Translate into system calls for RSX280
 ;
-; _exit(int val)
-_exit:
-	ldw	hl,(sp+2)	; return status on stack
-	SC	.EXIT
-	; we shouldn't be here now
-	jp	DISP
-
 ; int open(char *name,int flag)
 ;
 ; Parameters passed on the stack
