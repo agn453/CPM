@@ -932,7 +932,7 @@ reentry:
 	; HL points to the first non-blank character
 	ld	ix,p_argv	; IX -> first of the argv pointers
 	call	getargs		; Split line into argv elements
-	ld	(argc),de	; save argc
+	ld	(argc),hl	; save argc
 
 	ld	hl,(p_argv)	; pointer to argv[0]
 	ld	de,COMFCB
@@ -948,8 +948,6 @@ reentry:
 	call	$PRINT
 	defb	'"',CR,LF,0
     endif ;DEBUG
-
-	jp	reentry ;**TEMP
 
 	push	COMFCB		; Open the COM file
 	push	flag_r
@@ -970,7 +968,7 @@ reentry:
 arg_5:				; HL contains the LUN of opened file
 
 	jp	reentry
-;**TODO - open and read .COM file into TPA
+;**TODO - read .COM file into TPA
 
   endif
 
@@ -1101,8 +1099,9 @@ ast1:	call	qput		; store char in queue
 ; Get argv[] and argc
 ;
 ; On entry: IX -> array of 10 argv pointers
+;	    HL -> command string
 ;
-; Returns:  argc in DE
+; Returns:  argc in HL
 ;
 getargs:
 	ldw	(ix+0),hl	; save argv[0] (program name)
@@ -1142,7 +1141,7 @@ arg_2:	ld	ix,p_argv	; IX points to argv[0]
 	ld	d,0		; DE is argc
 	ld	e,c
 
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'argv contents',CR,LF,0
 	ldw	hl,(ix+0)
@@ -1162,6 +1161,7 @@ arg_3:
 arg_4:
     endif ;DEBUG
 
+	ex	de,hl
 	ret
 
 ;*******************************************************************
@@ -1572,26 +1572,27 @@ op_err:	ld	hl,-1		; no free LUNs, return error
 
 op_1:	set	0,(hl)		; Mark this lun as unavailable
 	; LUN is in BC
+	ld	(opnlun),bc	; Save it
 
 	ld	de,fsrsz
-	ld	iy,fsr_1	; Which file storage region to use?
+	ld	ix,fsr_1	; Which file storage region to use?
 
-op_2:	dec	bc
+op_2:	dec	bc		; index by LUN-1
 	ld	a,c
 	or	a
 	jr	z,op_3
-	add	iy,de
+	add	ix,de
 	jr	op_2
 
-op_3:	; IY points to the file storage region for this LUN
-	ldw	hl,(sp+4)	; get flag
-	ld	(iy+2),l	; set file access mode bit
+op_3:	; IX points to the file storage region for this LUN
+	ldw	hl,(sp+4)	; get flag to HL
+	ld	(ix+2),L	; set file access mode bit
 
-	ldw	hl,(iy+FC.FDB)	; get this file's FDB address
+	ldw	hl,(ix+FC.FDB)	; get this file's FDB address
 	push	hl		;  into IX
 	pop	ix
 
-	ldw	hl,(sp+2)	; point to name
+	ldw	hl,(sp+2)	; point HL to name string
 	call	PFN		; parse name into fcb
 	jr	nc,op_4		; It parsed correctly
 
@@ -1602,9 +1603,7 @@ op_3:	; IY points to the file storage region for this LUN
 
 	jr	op_err		; illegal filename
 
-op_4:	push	iy		; get fsr into IX
-	pop	ix
-
+op_4:
 	ldw	hl,(sp+4)	; is it an open for Read?
 	ld	a,l
 	cp	1 SHL FM.RD
@@ -1626,8 +1625,7 @@ op_6:	jp	c,DISP
 	defb	CR,LF,'%OPEN-I-File opened',0
     endif ;DEBUG
 
-	ld	h,0
-	ld	l,(ix+3)	; return the LUN of opened file
+	ld	hl,(opnlun)	; return the LUN of opened file
 	or	a		;  from file storage region
 	jp	NOERR
 
@@ -1816,6 +1814,7 @@ luntbsz	equ	4
 luntb:	defs	luntbsz		; LUN "in-use" table
 				; One byte for each LUN 1-4
 				; Non-zero means file open
+opnlun:	defs	2		; The LUN being accessed
 
 ; Console terminal input queue
 TTQ:	defs	1		;input position
@@ -1979,11 +1978,17 @@ bios::	jp	done		;0 Cold Boot
 ; Note: The file access mode bits are overwritten by the _open
 ; routine and we use a common event flag for access to all files
 
-fsr_1:	FSR$	,<1 SHL FM.RD>,LUNFL1,FIOEFN
+fsr_1:	FSR$	FDB1,<1 SHL FM.RD>,LUNFL1,FIOEFN
 fsrsz	equ	$-fsr_1
-fsr_2:	FSR$	,<1 SHL FM.WR>,LUNFL2,FIOEFN
-fsr_3:	FSR$	,<1 SHL FM.WR>,LUNFL3,FIOEFN
-fsr_4:	FSR$	,<1 SHL FM.WR>,LUNFL4,FIOEFN
+fsr_2:	FSR$	FDB2,<1 SHL FM.WR>,LUNFL2,FIOEFN
+fsr_3:	FSR$	FDB3,<1 SHL FM.WR>,LUNFL3,FIOEFN
+fsr_4:	FSR$	FDB4,<1 SHL FM.WR>,LUNFL4,FIOEFN
+
+FDB1:	defs	FINFSZ
+FDB2:	defs	FINFSZ
+FDB3:	defs	FINFSZ
+FDB4:	defs	FINFSZ
+
 
   endif ;RSX280
 
