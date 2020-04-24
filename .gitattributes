@@ -1,0 +1,9 @@
+# Default is to keep crlf line endings
+text=auto
+
+Makefile eol=crlf
+*.cmd eof=crlf
+*.mac eol=crlf
+*.inc eol=crlf
+*.lib binary
+

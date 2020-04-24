@@ -1,0 +1,15 @@
+	cseg
+;
+; A simple CP/M program for testing
+;
+	.z80
+
+start:	ld	c,9	; print string
+	ld	de,msg
+	call	5
+	jp	0
+
+msg:	defb	13,10,'Hello from CP/M',13,10,'$'
+
+	end	start
+
