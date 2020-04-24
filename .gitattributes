@@ -1,0 +1,7 @@
+# Default is to keep crlf line endings
+text=auto
+
+*.mac eol=crlf
+*.inc eol=crlf
+*.lib binary
+
