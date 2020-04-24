@@ -49,7 +49,7 @@ UZI280	equ	not RSX280	; original code preserved
 DEBUG	equ	TRUE		; output debugging messages
 
 ; CP/M memory sizing
-memsize	equ	48		; A modest machine first - 48KB
+memsize	equ	56		; A modest machine first - 56KB
 topmem	equ	memsize*1024
 cpmoffset equ	topmem-20*1024	; based on standard CP/M 2.2
 
@@ -154,8 +154,19 @@ tpa::
 	defs	cpmbdos-cpmtpa-3 ; Rest of TPA
 
 ;*******************************************************************
-
+;
 ; BDOS emulator
+;
+; This is at the standard CP/M 2.2 address for programs
+; to access.  The emulator set-up and control routines
+; are embedded here too.  These begin at the entry-point
+; labelled MAIN.  When an emulated program exits, it
+; either does a Warm Boot (JP 0/RST 0) or return (if the
+; stack hasn't been modified) and the emulator closes any
+; open files and prompts for the next CP/M command.
+; To exit back to RSX280, type Ctrl-Z or Ctrl-C to the
+; X> prompt.
+;
 bdos::
 	jp	entry		; make the BDOS look like real CP/M
 	nop			; (it starts with a JP instruction
@@ -171,11 +182,17 @@ entry:
 	ld	(arg),hl
 	ld	a,c
 	ld	(call),a 	; BDOS function number
+  if RSX280
+	push	iy		; IY may be used too by the
+  endif ;RSX280			; emulator under RSX280
 	push	ix
 	push	hl
 	pop	ix		; (arg) into IX
 	call	bdos2
 	pop	ix
+  if RSX280
+	pop	iy
+  endif ;RSX280
 	ex	de,hl		; save return val in DE
 	ld	hl,(oldstk)
 	ld	sp,hl
@@ -260,14 +277,14 @@ return_version:
 	ret
 
 ;*******************************************************************
-; BDOS call set dma addres
+; BDOS call set dma address
 set_dma:
 	ld	hl,(arg)
 	ld	(dmaadr),hl
 	ret
 
 ;*******************************************************************
-; BDOS call reset dma addres
+; BDOS call reset dma address
 reset_dma:
 	ld	hl,080h
 	ld	(dmaadr),hl
@@ -941,15 +958,6 @@ reentry:
 	ld	hl,DOTCOM
 	call	strcpy		; add .COM file type
 
-    if DEBUG
-	call	$PRINT
-	defb	CR,LF,'Opening "',0
-	ld	hl,COMFCB
-	call	$MSGHL
-	call	$PRINT
-	defb	'"',CR,LF,0
-    endif ;DEBUG
-
 	push	COMFCB		; Open the COM file
 	push	flag_r
 	call	_open
@@ -1456,6 +1464,71 @@ $MSGHL:	ld	a,(hl)
 	call	$TTOUT
 	jr	$MSGHL
 
+    if DEBUG
+
+$HLHEX:	ld	a,h
+	call	$AHEX
+	ld	a,l
+$AHEX:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	$CHEX
+	pop	af
+$CHEX:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	jp	$TTOUT
+
+; Dump out the FSR and FDB in hex.  IX points to FSR
+;
+dumpfsr:
+	push	hl
+	push	bc
+	call	$PRINT
+	defb	CR,LF,'<FDB>',CR,LF,0
+	ldw	hl,(ix+FC.FDB)
+	call	$HLHEX
+	call	$PRINT
+	defb	': ',0
+	ld	b,FINFSZ
+du_0:   ld	a,(hl)
+	call	$AHEX
+	ld	a,' '
+	call	$TTOUT
+	inc	hl
+	ld	a,b
+	and	0Fh
+	jr	nz,du_1
+	call	$CRLF
+	call	$HLHEX
+	call	$PRINT
+	defb	': ',0
+du_1:
+	djnz	du_0
+	call	$PRINT
+	defb	CR,LF,'<FSR>',CR,LF,0
+	push	ix
+	pop	hl
+	call	$HLHEX
+	call	$PRINT
+	defb	': ',0
+	ld	b,FCSIZ
+du_2:	ld	a,(hl)
+	call	$AHEX
+	ld	a,' '
+	call	$TTOUT
+	inc	hl
+	djnz	du_2
+	call	$CRLF
+	pop	bc
+	pop	hl
+	ret
+
+    endif ;DEBUG
 ;*******************************************************************
 ; Exit program
 $EXIT:	call	$FLINP		; flush input buffer
@@ -1548,10 +1621,20 @@ DISP:	ret	nc		; no error
 ; Returns the LUN of the open file in HL (or -1 on error)
 ;
 _open:
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%OPEN-I-Filename "',0
+	ldw	hl,(sp+4)
+	call	$MSGHL
+	call	$PRINT
+	defb	'" mode ',0
+	ldw	hl,(sp+2)
+	call	$HLHEX
+    endif
+
 	ld	hl,luntb	; look for an available LUN
 	ld	bc,1
-op_0:	ld	a,(hl)
-	or	a
+op_0:	bit	0,(hl)
 	jr	z,op_1		; found LUN in BC is free
 	inc	hl
 	inc	c
@@ -1561,71 +1644,119 @@ op_0:	ld	a,(hl)
 
     if DEBUG
 	call	$PRINT
-	defb	CR,LF,'OPEN-F-No free LUN',0
+	defb	CR,LF,'%OPEN-F-No free LUN',0
     endif ;DEBUG
+	ld	a,E.NOBUF	; Use "Out of disk buffers" error
+	jp	op_err
 
-cl_err:
-op_err:	ld	hl,-1		; no free LUNs, return error
-	scf
-	ret
-
-op_1:	set	0,(hl)		; Mark this lun as unavailable
+op_1:	ld	(opnltbe),hl	; Save in case open fails
+	set	0,(hl)		; Mark this lun as unavailable
 	; LUN is in BC
 	ld	(opnlun),bc	; Save it
 
-	ld	de,fsrsz
-	ld	ix,fsr_1	; Which file storage region to use?
+    if DEBUG
+	push	bc
+	call	$PRINT
+	defb	CR,LF,'%OPEN-I-Using LUN ',0
+	ld	h,b
+	ld	l,c
+	call	$HLHEX
+	pop	bc
+    endif ;DEBUG
+
+	ld	de,FCSIZ+512	; size of FSR and buffer
+	ld	hl,fsr_1	; Which file storage region to use?
 
 op_2:	dec	bc		; index by LUN-1
 	ld	a,c
 	or	a
 	jr	z,op_3
-	add	ix,de
+	add	hl,de
 	jr	op_2
 
-op_3:	; IX points to the file storage region for this LUN
-	ldw	hl,(sp+4)	; get flag to HL
-	ld	(ix+2),L	; set file access mode bit
-
-	ldw	hl,(ix+FC.FDB)	; get this file's FDB address
-	push	hl		;  into IX
+op_3:	push	hl
 	pop	ix
+	; IX points to the file storage region for this LUN
+  if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%OPEN-I-FSR address ',0
+	push	ix
+	pop	hl
+	call	$HLHEX
+	call	dumpfsr
+  endif ;DEBUG
+	ldw	hl,(sp+2)	; get flag to HL
+	ld	(ix+FC.MODE),L	; set file access mode bit
 
-	ldw	hl,(sp+2)	; point HL to name string
+	ldw	hl,(sp+4)	; point HL to name string
+	push	ix
+	ldw	ix,(ix+FC.FDB)  ; point IX to FCB
 	call	PFN		; parse name into fcb
+	pop	ix
 	jr	nc,op_4		; It parsed correctly
 
     if DEBUG
+	push	af
 	call	$PRINT
 	defb	CR,LF,'%OPEN-F-Illegal filename',0
+	pop	af
     endif ;DEBUG
-
 	jr	op_err		; illegal filename
 
 op_4:
-	ldw	hl,(sp+4)	; is it an open for Read?
-	ld	a,l
-	cp	1 SHL FM.RD
-	jr	z,op_5		; yes, open existing file
+    if DEBUG
+	call	dumpfsr
+    endif ;DEBUG
 
-	ld	de,0
-	xor	a
-	ld	c,a
-	call	FCREAT		; create a new file
-	jr	op_6
-
-op_5:	call	FOPEN		; open existing file
-
-; Carry SET and HL = -1 if an error opening
-op_6:	jp	c,DISP
+	ldw	hl,(sp+2)	; is it an open for Read?
+	bit	FM.RD,L		;  (or Read/Write)
+	jr	nz,op_5		; yes, open existing file
 
     if DEBUG
 	call	$PRINT
-	defb	CR,LF,'%OPEN-I-File opened',0
+	defb	CR,LF,'%OPEN-I-Creating new file',0
+    endif ;DEBUG
+
+	xor	a		; non-contiguous (A=0)
+	ld	c,a		; number of blocks to
+	ld	d,a		;  allocate (CDE=0)
+	ld	e,a
+
+	call	FCREAT		; create a new file
+	jr	op_6
+
+op_5:
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%OPEN-I-Existing file',0
+    endif ;DEBUG
+
+	call	FOPEN		; open existing file
+op_6:	jp	c,op_err
+
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%OPEN-I-File opened',CR,LF,0
     endif ;DEBUG
 
 	ld	hl,(opnlun)	; return the LUN of opened file
 	or	a		; clear carry
+	ret
+
+op_err:	ld	l,a
+	ld	h,0
+	push	hl
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%OPEN-E-Failed. Error code ',0
+	call	$HLHEX
+    endif ;DEBUG
+	ld	hl,(opnltbe)	; open failed - reset LUN
+	res	0,(hl)		;  in-use entry
+	pop	hl
+	ld	(errno),hl
+	ld	hl,-1
+	scf
 	ret
 
 ; close(int index)
@@ -1633,6 +1764,14 @@ op_6:	jp	c,DISP
 ; Close the opened file with the LUN given by index
 ;
 _close:
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%CLOSE-I-Close LUN ',0
+	ldw	hl,(sp+2)
+	call	$HLHEX
+	call	$CRLF
+    endif ;DEBUG
+
 	ldw	hl,(sp+2)
 	ld	a,h
 	or	l
@@ -1642,50 +1781,88 @@ _close:
 	ld	(opnlun),hl
 	ld	b,h
 	ld	c,l
-	ld	de,fsrsz
-	ld	ix,fsr_1	; Which file storage region to use?
+	ld	de,FCSIZ+512
+	ld	hl,fsr_1	; Which file storage region to use?
 
 cl_2:	dec	bc		; index by LUN-1
 	ld	a,c
 	or	a
 	jr	z,cl_3
-	add	ix,de
+	add	hl,de
 	jr	cl_2
 
-cl_3:	; IX points to the file storage region for this LUN
+cl_3:	push	hl
+	pop	ix
+	; IX points to the file storage region for this LUN
 	call	FCLOSE		; close it
+	push	af		; save status
 
 	ld	de,(opnlun)
 	dec	de
 	ld	hl,luntb
 	add	hl,de
 	res	0,(hl)		; Mark this LUN as available
-	ld	hl,EX.SUC	; Exit with success result
-	jp	DISP
+
+	pop	af
+	ret	nc		; No errors
+
+    if DEBUG
+	push	af
+	call	$PRINT
+	defb	'%CLOSE-E-Error closing file',0
+	pop	af
+    endif ;DEBUG
+
+cl_err:	ld	l,a
+	ld	h,0
+	ld	(errno),hl
+	ld	hl,-1
+	ret
 
 ; creat(char *name,int mode)
 _creat:
-	SC 3
-	jp	DISP
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%CREAT-I-Create file "',0
+	ldw	hl,(sp+4)
+	call	$MSGHL
+	call	$PRINT
+	defb	'" protection mask ',0
+	ldw	hl,(sp+2)
+	call	$HLHEX
+    endif ;DEBUG
+
+	; We'll ignore the protection mask and just call _open
+	ldw	hl,(sp+4)
+	push	hl
+	push	flag_w
+	call	_open
+	pop	de
+	pop	de
+	; Return the staus from _open
+	ret
 
 ; unlink(char *path)
 _unlink:
-	SC 6
-	jp	DISP
+;**TODO
+	ret	nc
+	ld	(errno),hl
+	ld	hl,-1
+	ret
 
 ; read(int d, char *buf,unsigned nbytes)
 _read:
-	ldw	hl,(sp+2)	; d
+	ldw	hl,(sp+6)	; d
 	ldw	ix,(sp+4)	; point to buf
 
 	cpw	hl,LUNTI	; is it the console LUN?
 	jr	nz,_rd_0	; no
 
 _rdtty:
-	ldw	hl,(sp+6)	; nbytes
+	ldw	hl,(sp+2)	; nbytes
 	ld	a,h
 	or	l
-	jr	z,DISP		; no more
+	ret	z		; no more
 	call	$TTGC		; get a character
 	ld	(ix+0),a	; into buffer
 	inc	ix
@@ -1693,26 +1870,33 @@ _rdtty:
 	jr	_rdtty
 
 _rd_0:	; read from a file - LUN is in HL
+	; buffer pointer in IX
 
 ;**TODO
-
-	SC 7
-	jp	DISP
+	ret	nc
+	ld	(errno),hl
+	ld	hl,-1
+	ret
 
 ; write(int d, char *buf,unsigned nbytes)
 _write:
-	SC 8
-	jp	DISP
+
+;**TODO
+	ret	nc
+	ld	(errno),hl
+	ld	hl,-1
+	ret
 
 ; 16 bit seek.
 ; seek(int file,offset,flag)
 _seek:
-	SC 9
 
-DISP:	ret	nc		;No error
+;**TODO
+	ret	nc
 	ld	(errno),hl
 	ld	hl,-1
 	ret
+
   endif ;RSX280
 
 ;*******************************************************************
@@ -1819,7 +2003,11 @@ errno:	defs	2
 
 	cseg
 
-VERSION: defb	'V0.99 [testing]',0
+VERSION: defb	'V0.99'
+  if DEBUG
+	defb	' [DEBUG]'
+  endif ;DEBUG
+	defb	0
 
 argc:	defs	2
 p_argv:	defs	10*2		; Room for 10 pointers (0..9)
@@ -1843,6 +2031,7 @@ luntbsz	equ	4
 luntb:	defs	luntbsz		; LUN "in-use" table
 				; One byte for each LUN 1-4
 				; Non-zero means file open
+opnltbe: defs	2		; Current luntb entry
 opnlun:	defs	2		; The LUN being accessed
 
 ; Console terminal input queue
@@ -2007,16 +2196,15 @@ bios::	jp	done		;0 Cold Boot
 ; Note: The file access mode bits are overwritten by the _open
 ; routine and we use a common event flag for access to all files
 
-fsr_1:	FSR$	FDB1,<1 SHL FM.RD>,LUNFL1,FIOEFN
-fsrsz	equ	$-fsr_1
-fsr_2:	FSR$	FDB2,<1 SHL FM.WR>,LUNFL2,FIOEFN
-fsr_3:	FSR$	FDB3,<1 SHL FM.WR>,LUNFL3,FIOEFN
-fsr_4:	FSR$	FDB4,<1 SHL FM.WR>,LUNFL4,FIOEFN
+fsr_1::	FSR$	FDB1,<1 SHL FM.RD>,LUNFL1,FIOEFN
+fsr_2::	FSR$	FDB2,<1 SHL FM.WR>,LUNFL2,FIOEFN
+fsr_3::	FSR$	FDB3,<1 SHL FM.WR>,LUNFL3,FIOEFN
+fsr_4::	FSR$	FDB4,<1 SHL FM.WR>,LUNFL4,FIOEFN
 
-FDB1:	defs	FINFSZ
-FDB2:	defs	FINFSZ
-FDB3:	defs	FINFSZ
-FDB4:	defs	FINFSZ
+FDB1::	defs	FINFSZ
+FDB2::	defs	FINFSZ
+FDB3::	defs	FINFSZ
+FDB4::	defs	FINFSZ
 
 
   endif ;RSX280
