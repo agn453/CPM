@@ -49,7 +49,7 @@ UZI280	equ	not RSX280	; original code preserved
 DEBUG	equ	TRUE		; output debugging messages
 
 ; CP/M memory sizing
-memsize	equ	56		; A modest machine first - 56KB
+memsize	equ	56		; 56KB memory size
 topmem	equ	memsize*1024
 cpmoffset equ	topmem-20*1024	; based on standard CP/M 2.2
 
@@ -85,7 +85,7 @@ cpmbios	equ	04a00h+cpmoffset ; BIOS only emulates character I/O
 	list	on
 
 	extrn	PFN
-	extrn	FCREAT,FOPEN,FCLOSE
+	extrn	FCREAT,FOPEN,FCLOSE,FREAD,FWRITE
 
   endif ;RSX280
 
@@ -967,7 +967,7 @@ reentry:
 	cpw	hl,-1
 	jr	nz,arg_5	; opened
 
-	ld	hl,(p_argv)	; not found
+notfnd:	ld	hl,(p_argv)	; not found
 	call	$CRLF
 	call	$MSGHL		; output argv[0] followed
 	call	$PRINT		;  by a '?' for unknown
@@ -975,14 +975,51 @@ reentry:
 	jp	reentry
 
 arg_5:				; HL contains the LUN of opened file
+	push	hl		; LUN to stack
+	push	tpa		; TPA address to stack
+ldcom1:	push	128		; number of bytes to read at a time
+	call	_read		; Read sector into TPA
+	jr	c,ldcom2	; An error? (most likely end of file)
+	; number of bytes read returned in BC
+	ld	h,b
+	ld	l,c
+	cpw	hl,0		; nothing read?
+	jr	z,ldcom2
+	pop	de		; remove nchars from stack
+	pop	de		; buffer address from stack
+	add	hl,de		; add number of bytes read
+	cpw	hl,bdos		; don't overwrite the BDOS
+	jr	nc,ldcom3	; too big
+	push	hl
+	jr	ldcom1		; next sector
 
-;**TEMP - just close it
-	push	hl		; close(lun)
+ldcom3:
 	call	_close
 	pop	de
-	jp	reentry
-;**TODO - read .COM file into TPA
+	jr	notfnd		; Error
 
+ldcom2:	pop	de		; clean up stack (byte count)
+	pop	(topcom)	; save top load address
+	call	_close
+	pop	de		; LUN
+	; .COM file loaded
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'Program loaded 0100-',0
+	ld	hl,(topcom)
+	call	$HLHEX
+	call	$CRLF
+      if 0
+	call	dumptpa
+      endif
+    endif ;DEBUG
+
+	ld	hl,(topcom)
+	cpw	hl,tpa		; Anything loaded?
+	jp	z,notfnd	; No - treat as an error
+
+	ld	hl,p_argv
+	ld	de,(argc)
   endif
 
 	;argv in HL
@@ -1041,6 +1078,12 @@ m_2:
 	ld	hl,bdos
 	ld	(0006),hl
 
+  if 0 ;DEBUG
+	push	hl
+	call	dumppg0
+	pop	hl
+  endif
+
 	ld	a,0ffh		; enable lowercase input
 	ld	(ttlc),a
 
@@ -1064,7 +1107,7 @@ FIRST3::
   endif ;UZI280
 
   if RSX280
-; Program loaded - off we go!
+	; Program loaded - off we go!
 	ld	hl,done		; Push a return address
 	push	hl		; to return to the CPM X> prompt
 	jp	tpa		; Start transient program
@@ -1117,6 +1160,17 @@ ast1:	call	qput		; store char in queue
 ; Returns:  argc in HL
 ;
 getargs:
+	push	ix
+	push	hl
+	ld	hl,NULL
+	ld	b,10		; set argv[0..9] to NULL
+arg_z:	ldw	(ix+0),hl
+	inc	ix
+	inc	ix
+	djnz	arg_z
+	pop	hl
+	pop	ix
+
 	ldw	(ix+0),hl	; save argv[0] (program name)
 	ld	c,0		; for computing argc
 
@@ -1153,10 +1207,11 @@ arg_1a:	ld	(hl),0
 arg_2:	ld	ix,p_argv	; IX points to argv[0]
 	ld	d,0		; DE is argc
 	ld	e,c
+	INC	DE
 
     if 0 ;DEBUG
 	call	$PRINT
-	defb	CR,LF,'argv contents',CR,LF,0
+	defb	CR,LF,'<argv>',CR,LF,0
 	ldw	hl,(ix+0)
 arg_3:
 	call	$PRINT
@@ -1172,6 +1227,12 @@ arg_3:
 	inc	ix
 	jr	arg_3
 arg_4:
+	call	$PRINT
+	defb	CR,LF,'argc = ',0
+	ld	h,d
+	ld	l,e
+	call	$HLHEX
+	call	$CRLF
     endif ;DEBUG
 
 	ex	de,hl		; return argc value
@@ -1483,6 +1544,51 @@ $CHEX:	and	0Fh
 	daa
 	jp	$TTOUT
 
+      if 0
+dumppg0:
+	call	$PRINT
+	defb	CR,LF,'<page0>',0
+	ld	hl,0
+du_p0:	ld	a,l
+	and	0Fh
+	jr	nz,du_p1
+	call	$CRLF
+	call	$HLHEX
+	call	$PRINT
+	defb	': ',0
+du_p1:	ld	a,(hl)
+	call	$AHEX
+	call	$PRINT
+	defb	' ',0
+	inc	hl
+	cpw	hl,0100h
+	jr	nz,du_p0
+	jp	$CRLF
+      endif
+
+      if 0
+dumptpa:
+	call	$PRINT
+	defb	CR,LF,'<tpa>',0
+	ld	hl,tpa
+du_t0:	ld	a,l
+	and	0Fh
+	jr	nz,du_t1
+	call	$CRLF
+	call	$HLHEX
+	call	$PRINT
+	defb	': ',0
+du_t1:	ld	a,(hl)
+	call	$AHEX
+	call	$PRINT
+	defb	' ',0
+	inc	hl
+	cpw	hl,(topcom)
+	jr	nz,du_t0
+	jp	$CRLF
+      endif
+
+      if 0
 ; Dump out the FSR and FDB in hex.  IX points to FSR
 ;
 dumpfsr:
@@ -1527,8 +1633,10 @@ du_2:	ld	a,(hl)
 	pop	bc
 	pop	hl
 	ret
+      endif ;0
 
     endif ;DEBUG
+
 ;*******************************************************************
 ; Exit program
 $EXIT:	call	$FLINP		; flush input buffer
@@ -1621,7 +1729,7 @@ DISP:	ret	nc		; no error
 ; Returns the LUN of the open file in HL (or -1 on error)
 ;
 _open:
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-Filename "',0
 	ldw	hl,(sp+4)
@@ -1630,7 +1738,7 @@ _open:
 	defb	'" mode ',0
 	ldw	hl,(sp+2)
 	call	$HLHEX
-    endif
+    endif ;DEBUG
 
 	ld	hl,luntb	; look for an available LUN
 	ld	bc,1
@@ -1654,7 +1762,7 @@ op_1:	ld	(opnltbe),hl	; Save in case open fails
 	; LUN is in BC
 	ld	(opnlun),bc	; Save it
 
-    if DEBUG
+    if 0 ;DEBUG
 	push	bc
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-Using LUN ',0
@@ -1677,7 +1785,7 @@ op_2:	dec	bc		; index by LUN-1
 op_3:	push	hl
 	pop	ix
 	; IX points to the file storage region for this LUN
-  if DEBUG
+  if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-FSR address ',0
 	push	ix
@@ -1698,20 +1806,27 @@ op_3:	push	hl
     if DEBUG
 	push	af
 	call	$PRINT
-	defb	CR,LF,'%OPEN-F-Illegal filename',0
+	defb	CR,LF,'%OPEN-F-Parse filename failed',0
 	pop	af
     endif ;DEBUG
 	jr	op_err		; illegal filename
 
 op_4:
-    if DEBUG
+    if 0 ;DEBUG
 	call	dumpfsr
     endif ;DEBUG
 
 	ldw	hl,(sp+2)	; is it an open for Read?
-	bit	FM.RD,L		;  (or Read/Write)
+	ld	a,l
+	bit	FM.RD,a		;  (or Read/Write)
 	jr	nz,op_5		; yes, open existing file
 
+	and	NOT (1 SHL FM.WR) ; Are there other mode bits (other than WR)
+	jr	z,op_creat
+	ld	a,E.BADOP	; We don't support them for now.
+	jr	op_err
+
+op_creat:
     if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-Creating new file',0
@@ -1726,7 +1841,7 @@ op_4:
 	jr	op_6
 
 op_5:
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-Existing file',0
     endif ;DEBUG
@@ -1734,7 +1849,7 @@ op_5:
 	call	FOPEN		; open existing file
 op_6:	jp	c,op_err
 
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-File opened',CR,LF,0
     endif ;DEBUG
@@ -1743,9 +1858,9 @@ op_6:	jp	c,op_err
 	or	a		; clear carry
 	ret
 
-op_err:	ld	l,a
+op_err:	ld	l,a		; save RSX280 error in errno
 	ld	h,0
-	push	hl
+	ld	(errno),hl
     if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-E-Failed. Error code ',0
@@ -1753,8 +1868,6 @@ op_err:	ld	l,a
     endif ;DEBUG
 	ld	hl,(opnltbe)	; open failed - reset LUN
 	res	0,(hl)		;  in-use entry
-	pop	hl
-	ld	(errno),hl
 	ld	hl,-1
 	scf
 	ret
@@ -1764,7 +1877,7 @@ op_err:	ld	l,a
 ; Close the opened file with the LUN given by index
 ;
 _close:
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%CLOSE-I-Close LUN ',0
 	ldw	hl,(sp+2)
@@ -1809,7 +1922,7 @@ cl_3:	push	hl
     if DEBUG
 	push	af
 	call	$PRINT
-	defb	'%CLOSE-E-Error closing file',0
+	defb	CR,LF,'%CLOSE-E-Error closing file',0
 	pop	af
     endif ;DEBUG
 
@@ -1821,13 +1934,13 @@ cl_err:	ld	l,a
 
 ; creat(char *name,int mode)
 _creat:
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%CREAT-I-Create file "',0
 	ldw	hl,(sp+4)
 	call	$MSGHL
 	call	$PRINT
-	defb	'" protection mask ',0
+	defb	'" prot ',0
 	ldw	hl,(sp+2)
 	call	$HLHEX
     endif ;DEBUG
@@ -1835,8 +1948,8 @@ _creat:
 	; We'll ignore the protection mask and just call _open
 	ldw	hl,(sp+4)
 	push	hl
-	push	flag_w
-	call	_open
+	push	flag_w		; Open for Write will create
+	call	_open		;  a new file (a new version)
 	pop	de
 	pop	de
 	; Return the staus from _open
@@ -1845,6 +1958,11 @@ _creat:
 ; unlink(char *path)
 _unlink:
 ;**TODO
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%UNLINK-E-Not yet implemented',0
+	scf
+    endif ;DEBUG
 	ret	nc
 	ld	(errno),hl
 	ld	hl,-1
@@ -1852,39 +1970,142 @@ _unlink:
 
 ; read(int d, char *buf,unsigned nbytes)
 _read:
-	ldw	hl,(sp+6)	; d
-	ldw	ix,(sp+4)	; point to buf
 
+    if 0 ;DEBUG
+	call	$PRINT
+	defb	CR,LF,'%READ-I-Read from LUN ',0
+	ldw	hl,(sp+6)
+	call	$HLHEX
+	call	$PRINT
+	defb	' into ',0
+	ldw	hl,(sp+4)
+	call	$HLHEX
+	call	$PRINT
+	defb	' bytes ',0
+	ldw	hl,(sp+2)
+	call	$HLHEX
+	call	$CRLF
+    endif ;DEBUG
+
+	ldw	ix,(sp+4)	; point to buffer
+	ldw	hl,(sp+6)	; d
 	cpw	hl,LUNTI	; is it the console LUN?
-	jr	nz,_rd_0	; no
+	jr	nz,rd_0		; no
 
 _rdtty:
 	ldw	hl,(sp+2)	; nbytes
-	ld	a,h
+	push	hl
+rd_ti:	ld	a,h
 	or	l
-	ret	z		; no more
+	jr	z,rd_tid	; no more
 	call	$TTGC		; get a character
 	ld	(ix+0),a	; into buffer
 	inc	ix
 	dec	hl
-	jr	_rdtty
+	jr	rd_ti
+rd_tid:	pop	bc		; return number of bytes read in BC
+	or	a		; clear carry (success)
+	ret
 
-_rd_0:	; read from a file - LUN is in HL
-	; buffer pointer in IX
+rd_0:	; read from a file - buf ptr is in IX
+        ld	b,h		; LUN -> BC
+	ld	c,l
+	ld	de,FCSIZ+512	; Select FSR for this LUN
+	ld	hl,fsr_1
 
-;**TODO
-	ret	nc
-	ld	(errno),hl
+rd_2:	dec	bc
+	ld	a,c
+	or	a
+	jr	z,rd_3
+	add	hl,de
+	jr	rd_2
+
+rd_3:	push	ix		; juggle registers
+	ex	(sp),hl		; buf ptr in HL, fsr ptr on stack
+	pop	ix		; fsr in IX
+	ex	de,hl		; buf ptr in DE
+	ldw	hl,(sp+2)	; number of bytes
+	ld	b,h		;  into BC
+	ld	c,l
+        ; all set, now do the read
+	call	FREAD
+	; number of bytes read is returned in BC, CY set on error
+	ret	nc		; done
+	ld	h,0
+	ld	l,a
+	ld	(errno),hl	; put error code into errno
 	ld	hl,-1
+	scf
 	ret
 
 ; write(int d, char *buf,unsigned nbytes)
 _write:
 
-;**TODO
-	ret	nc
-	ld	(errno),hl
+    if 0 ;DEBUG
+	call	$PRINT
+	defb	CR,LF,'%WRITE-I-Write to LUN ',0
+	ldw	hl,(sp+6)
+	call	$HLHEX
+	call	$PRINT
+	defb	' from ',0
+	ldw	hl,(sp+4)
+	call	$HLHEX
+	call	$PRINT
+	defb	' bytes ',0
+	ldw	hl,(sp+2)
+	call	$HLHEX
+	call	$CRLF
+    endif ;DEBUG
+
+	ldw	ix,(sp+4)	; point to buffer
+	ldw	hl,(sp+6)	; d
+	cpw	hl,LUNTI	; is it the console LUN?
+	jr	nz,wr_0		; no
+
+_wrtty:
+	ldw	hl,(sp+2)	; nbytes
+	push	hl
+wr_ti:	ld	a,h
+	or	l
+	jr	z,wr_tid	; no more
+	ld	a,(ix+0)	; fetch char
+	call	$TTOUT		; output a character
+	inc	ix
+	dec	hl
+	jr	wr_ti
+wr_tid:	pop	bc		; return number of bytes written in BC
+	or	a		; clear carry (success)
+	ret
+
+wr_0:	; write to a file - buf ptr is in IX
+        ld	b,h		; LUN -> BC
+	ld	c,l
+	ld	de,FCSIZ+512	; Select FSR for this LUN
+	ld	hl,fsr_1
+
+wr_2:	dec	bc
+	ld	a,c
+	or	a
+	jr	z,wr_3
+	add	hl,de
+	jr	wr_2
+
+wr_3:	push	ix		; juggle registers
+	ex	(sp),hl		; buf ptr in HL, fsr ptr on stack
+	pop	ix		; fsr in IX
+	ex	de,hl		; buf ptr in DE
+	ldw	hl,(sp+2)	; number of bytes
+	ld	b,h		;  into BC
+	ld	c,l
+        ; all set, now do the write
+	call	FWRITE
+	; number of bytes written is returned in BC, CY set on error
+	ret	nc		; done
+	ld	h,0
+	ld	l,a
+	ld	(errno),hl	; put error code into errno
 	ld	hl,-1
+	scf
 	ret
 
 ; 16 bit seek.
@@ -1892,6 +2113,11 @@ _write:
 _seek:
 
 ;**TODO
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%SEEK-E-Not yet implemented',0
+	scf
+    endif ;DEBUG
 	ret	nc
 	ld	(errno),hl
 	ld	hl,-1
@@ -1943,9 +2169,10 @@ dummy:
 ; 	fall through
 
 ; end of program run
+
+done:
   if UZI280
 	; UZI exits to command shell
-done:
 	ld	hl,(080h)	; HI-TECH C stores its exit value at 80h
 	push	hl
 	call	_exit
@@ -1953,8 +2180,32 @@ done:
 
   if RSX280
 	;RSX prompts for next CP/M program
-done:
 	ld	sp,tmpstk	; back to our stack
+
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'Program exit',CR,LF,0
+    endif ;DEBUG
+
+	; Close any open files
+	ld	hl,luntb
+	ld	de,1		; start with LUN 1
+do_1:	bit	0,(hl)		; is it open?
+	jr	z,do_2		; no
+	push	hl
+	push	de		; LUN
+	call	_close		; close it
+	pop	de
+	pop	hl
+	res	0,(hl)		; mark it as closed
+do_2:	inc	hl
+	inc	de		; next LUN
+	ld	a,e
+	cp	luntbsz+1	; are we done ?
+	jr	c,do_1		; no
+
+	xor	a
+	ld	(ttlc),a	; Uppercase enable
 	jp	reentry
   endif ; RSX280
 
@@ -2012,9 +2263,12 @@ VERSION: defb	'V0.99'
 argc:	defs	2
 p_argv:	defs	10*2		; Room for 10 pointers (0..9)
 
+NULL:	defb	0
+
 COMFCB:	defs	FNSZ		; RSX280 filespec of CP/M .COM file
 
 DOTCOM:	defb	'.COM',0
+topcom:	defs	2
 
 u_name:	defs	16		; holds converted RSX file name
 
