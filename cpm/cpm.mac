@@ -9,7 +9,7 @@
 ;	Stefan Nitschke, 13.3.1996
 ;
 ;	Adaption and programming for RSX280 by
-;	Tony Nicholson, 23-Apr-2020
+;	Tony Nicholson, 29-Apr-2020
 ;
 ;  This program is free software; you can redistribute it and/or
 ;  modify it under the terms of the GNU General Public License as
@@ -27,13 +27,18 @@
 ;
 ;*******************************************************************
 
-	.Z280		; Z280 only for now.
-			; At some later stage a version may
-			; be released for RSX180 on the Z180.
+	.Z280		; RSX280 and Z280 only for now.
+			; (The RSX180 operating system
+			; uses Page zero of a task for
+			; system calls and RST 0 for an
+			; illegal instruction handler -
+			; so this rules out a port to
+			; RSX180).
 
 FALSE	equ	0
 TRUE	equ	not FALSE
 
+ETX	equ	03h
 BS	equ	08h
 CR	equ	0Dh
 LF	equ	0Ah
@@ -49,11 +54,14 @@ UZI280	equ	not RSX280	; original code preserved
 DEBUG	equ	TRUE		; output debugging messages
 
 ; CP/M memory sizing
-memsize	equ	56		; 56KB memory size
+memsize	equ	60		; 60KB memory size
 topmem	equ	memsize*1024
 cpmoffset equ	topmem-20*1024	; based on standard CP/M 2.2
 
 ; Where CP/M expects things to be
+cpmfcb1	equ	0005ch		; FCB 1
+cpmfcb2	equ	0006ch		; FCB 2
+cpmdma	equ	00080h		; Default DMA address and command line
 cpmtpa	equ	00100h		 ; Transient programs are loaded here
 cpmccp	equ	03400h+cpmoffset ; CCP is implemented by this program
 cpmbdos	equ	03c00h+cpmoffset ; BDOS contains emulation code
@@ -121,14 +129,12 @@ TQ.IP	equ	0	; input pointer
 TQ.OP	equ	TQ.IP+1	; output pointer
 TQ.BUF	equ	TQ.OP+1	; buffer
 
-stdin	equ	LUNTI	; Use terminal
-stdout	equ	LUNTI	; Use terminal
-stderr	equ	LUNTI	; Use terminal
-
 flag_r	equ	1 SHL FM.RD	; R mode for file open()
+				; (R opens an existing file)
 flag_w	equ	1 SHL FM.WR	; W mode for file open()
-;**CHECK THIS
+				; (W creates a new file verson)
 flag_rw	equ	(1 SHL FM.RD) OR (1 SHL FM.WR)	; R/W mode for file open()
+				; (RW opens an existing file)
 
   endif ;RSX280
 	page
@@ -148,6 +154,9 @@ tpa::
 	;For RSX280 we load the CP/M .COM file into the TPA
 	;region ourselves (essentially this program behaves
 	;functionally like the CP/M Console Command Processor).
+	;A future enhancement may be to include loading the
+	;Digital Research CCP from CP/M 2.2 or one of its
+	;replacements.
 
 ; One big region to load CP/M binaries into
 
@@ -164,7 +173,7 @@ tpa::
 ; either does a Warm Boot (JP 0/RST 0) or return (if the
 ; stack hasn't been modified) and the emulator closes any
 ; open files and prompts for the next CP/M command.
-; To exit back to RSX280, type Ctrl-Z or Ctrl-C to the
+; To exit back to RSX280, type Ctrl-Z then Return to the
 ; X> prompt.
 ;
 bdos::
@@ -182,17 +191,11 @@ entry:
 	ld	(arg),hl
 	ld	a,c
 	ld	(call),a 	; BDOS function number
-  if RSX280
-	push	iy		; IY may be used too by the
-  endif ;RSX280			; emulator under RSX280
 	push	ix
 	push	hl
 	pop	ix		; (arg) into IX
 	call	bdos2
 	pop	ix
-  if RSX280
-	pop	iy
-  endif ;RSX280
 	ex	de,hl		; save return val in DE
 	ld	hl,(oldstk)
 	ld	sp,hl
@@ -215,6 +218,7 @@ bdos2:
 
 ;*******************************************************************
 ; Convert CP/M FCB name to UZI or RSX file name in variable u_name
+; Illegal filename characters are replaced with a dash "-".
 ;
 ; on entry: IX -> pointer to FCB
 ;
@@ -303,6 +307,8 @@ console_status:
 ;*******************************************************************
 ; BDOS call write string
 print_string:
+
+  if UZI280
 	ld	de,0
 	ld	hl,(arg)
 pr_lop:	ld	a,(hl)
@@ -319,6 +325,21 @@ pr_lop:	ld	a,(hl)
 	pop	de
 	pop	de
 	pop	de
+  endif ;UZI280
+
+  if RSX280
+	push	hl
+	ld	hl,(arg)
+pr_lop:	ld	a,(hl)
+	cp	'$'
+	jr	z,pr_done
+	call	$TTOUT
+	inc	hl
+	jr	pr_lop
+pr_done:
+	pop	hl
+  endif ;RSX280
+
 	ret
 
 ;*******************************************************************
@@ -328,15 +349,20 @@ direct_console:
 	cp	0ffh
 	jr	nz,write_console
 	call	char_avail
-	cpw	hl,0
+;	cpw	hl,0
+	ld	a,h
+	or	l
 	ret	z		; no char available, return zero
 	call	readchar
-;	if (c == '\n') c = '\r';
 	ld	a,(char)
+  if UZI280
+;	if (c == '\n') c = '\r';
 	cp	LF		; '\n'
 	jr	nz,di_01
 	ld	a,CR		; '\r'
-di_01:	ld	l,a
+di_01:
+  endif ;UZI280
+	ld	l,a
 	ld	h,0
 	ret
 
@@ -344,9 +370,11 @@ di_01:	ld	l,a
 ; BDOS call write console
 write_console:
 	ld	a,(arg)
+  if UZI280
 ;	if (arg == '\r') return(0)
 	cp	CR
 	ret	z
+  endif ;UZI280
 	ld	(char),a
 	call	writechar
 	ret
@@ -356,17 +384,22 @@ write_console:
 read_console:
 	call	readchar
 	ld	a,(char)
+  if UZI280
 	cp	LF		;'\n'
 	jr	nz,rc_1
 ;	if (c == '\n') c = '\r';
 	ld	a,CR		;'\r'
-rc_1:	ld	l,a
+rc_1:
+  endif ;UZI280
+	ld	l,a
 	ld	h,0
 	ret
 
 ;*******************************************************************
 ; BDOS call read console buffer
-rdbuf:
+
+  if UZI280
+
 ;    int nread;
 ;
 ;    nread = read(0, arg+2, *arg & 0xff );
@@ -374,8 +407,11 @@ rdbuf:
 ;    arg[nread+2] = 0;   /* Remove newline */
 ;    arg[1] = nread;
 ;    return(nread);
-	ld	hl,(arg)
-	cpw	hl,0
+
+rdbuf:	ld	hl,(arg)
+;	cpw	hl,0
+	ld	a,h
+	or	l
 	jr	nz,rdb_1
 	ld	hl,080h		; default dma buffer
 	ld	(arg),hl
@@ -404,6 +440,271 @@ rdb_2:	inc	hl
 	ld	(hl),a		; remove nl
 	ex	de,hl		; return nread
 	ret
+
+  endif ;UZI280
+
+  if RSX280
+	; We'll use code similar to the original DRI BDOS for
+	; reading the console buffer (for an authentic "feel")
+
+rdbuf:	ld	a,(curpos)	; save cursor position
+	ld	(starting),a	;  for processing Ctrl-X and Ctrl-H
+	push	ix		; We'll use HL for buffer pointer
+	pop	hl
+;	cpw	hl,0		; Is pointer is zero?
+	ld	a,h
+	or	l
+	jr	nz,rdbufg
+	ld	hl,cpmdma	; Yes, use default DMA buffer
+rdbufg:	ld	c,(hl)		; first byte is buffer size
+	inc	hl
+	push	hl		; save pointer to available space
+	ld	b,0
+rdbuf1:	push	bc
+	push	hl
+rdbuf2:	call	read_console	; Get next character
+	and	7Fh		; strip parity
+	pop	hl
+	pop	bc
+	cp	CR		; end of line?
+	jp	z,rdbuf17
+	cp	LF		; treat LF like a CR
+	jp	z,rdbuf17
+	cp	BS		; backspace?
+	jr	nz,rdbuf3	; no
+	ld	a,b		; yes, ignore at line beginning
+	or	a
+	jr	z,rdbuf1
+	dec	b		; backup one character
+	ld	a,(curpos)
+	ld	(outflag),a
+	jr	rdbuf10
+rdbuf3:	cp	RUBOUT		; rubout?
+	jr	nz,rdbuf4
+	ld	a,b
+	or	a		; ignore at start of line
+	jr	z,rdbuf1
+	ld	a,(hl)		; echo previous character
+	dec	b
+	dec	hl
+	jr	rdbuf15
+rdbuf4:	cp	05h		; physical line end (Ctrl-E)?
+	jr	nz,rdbuf6
+	push	bc
+	push	hl
+	call	outcrlf
+	xor	a
+	ld	(starting),a
+	jr	rdbuf2
+	; left out the detection of Ctrl-P for printer toggle
+rdbuf6:	cp	18h		; cancel (Ctrl-X)?
+	jr	nz,rdbuf8
+	pop	hl
+rdbuf7:	ld	a,(starting)	; backup the cursor
+	ld	hl,curpos
+	cp	(hl)
+	jr	nc,rdbuf
+	dec	(hl)		; move cursor back 1
+	call	backup
+	jr	rdbuf7
+rdbuf8:	cp	15h		; Ctrl-U (cancel line)?
+	jr	nz,rdbuf9
+	call	newline
+	pop	hl
+	jp	rdbuf
+rdbuf9:	cp	12h		; Ctrl-R?
+	jr	nz,rdbuf14
+rdbuf10:
+	push	bc		; Re-type the current line
+	call	newline
+	pop	bc
+	pop	hl		; HL back to beginning of line buf
+	push	hl
+	push	bc
+rdbuf11:
+	ld	a,b
+	or	a		; Have we done the whole line yet?
+	jr	z,rdbuf12
+	inc	hl		; No, get next character
+	ld	c,(hl)
+	dec	b		; count it
+	push	bc
+	push	hl
+	call	showit
+	pop	hl
+	pop	bc
+	jr	rdbuf11
+rdbuf12:
+	push	hl
+	ld	a,(outflag)
+	or	a
+	jr	z,rdbuf2
+	ld	hl,curpos
+	sub	(hl)
+	ld	(outflag),a
+rdbuf13:
+	call	backup
+	ld	hl,outflag
+	dec	(hl)
+	jr	nz,rdbuf13
+	jp	rdbuf2
+rdbuf14:
+	inc	hl
+	ld	(hl),a		; Store character in buffer
+	inc	b		; and count it
+rdbuf15:
+	push	bc
+	push	hl
+	ld	c,a
+	call	showit
+	pop	hl
+	pop	bc
+	ld	a,(hl)		; Was it a Ctrl-C?
+	cp	ETX
+	ld	a,b
+	jr	nz,rdbuf16
+	cp	1		; Only if at start of line
+	jp	z,$EXITC	; Exit program
+rdbuf16:
+	cp	c		; Have we filled the buffer?
+	jp	c,rdbuf1	; No
+rdbuf17:
+	inc	hl		; Store the line terminator
+	ld	(hl),a		;  in the buffer
+
+	pop	hl		; Yes, end the line and return
+	ld	(hl),b		; number of characters entered
+
+;AGN - fall through to output CR,LF
+;AGN	ld	c,CR
+;AGN	jr	outchar
+
+outcrlf:
+	ld	c,CR
+	call	outchar
+	ld	c,LF
+	jr	outchar
+
+backup:	call	backup1
+	ld	c,' '
+	call	_conout
+backup1:
+	ld	c,BS
+outchar:
+	jp	_conout
+
+chkchar:
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	TAB
+	ret	z
+	cp	BS
+	ret	z
+	cp	' '
+	ret
+
+showit:	ld	a,c
+	call	chkchar
+	jr	nc,outcon	; not a control char
+	push	af
+	ld	c,'^'		; output caret
+	call	outchar
+	pop	af
+	or	'@'		; make it printable
+	ld	c,a
+outcon:	ld	a,c
+	cp	09h		; tab?
+	jr	nz,outchar
+outcon1:
+	ld	c,' '		; expand tabs to the right number
+	call	outchar		;  of spaces
+	ld	a,(curpos)
+	and	07h
+	jr	nz,outcon1
+	ret
+
+newline:
+	ld	c,'#'		; signal a deleted line with a "#"
+	call	outchar
+	call	outcrlf
+newln1:	ld	a,(curpos)	; move the cursor back to starting
+	ld	hl,starting	; position
+	cp	(hl)
+	ret	nc
+	ld	c,' '
+	call	outchar
+	jr	newln1
+
+; Copy parameter pointer to by IX into the FCB pointed to by HL
+;
+;**TODO - wildcard characters * and ?
+fillfcb:
+	;assumes Drive field is always 0 - the current drive
+	inc	ix
+	push	ix		; save and init with spaces
+	ld	b,8+3
+	ld	a,' '
+ff_blnk:
+	ld	(ix+0),a
+	inc	ix
+	djnz	ff_blnk
+
+	pop	ix
+	ld	b,8		; name part is up to 8 chars
+ff_nam:	ld	a,(ix+0)
+	or	a		; end of string?
+	ret	z
+	cp	'.'		; filename delimeter
+	jr	z,ff_ext
+	call	delimiter	; is it a delimiter?
+	ret	z		; yes - done
+	ld	(hl),a		; store in FCB
+	inc	ix
+	inc	hl
+	djnz	ff_nam
+ff_skp:	ld	a,(ix+0)	; skip rest of name part
+	or	a
+	ret	z		; end of string - done
+	cp	'.'
+	jr	z,ff_exte
+	call	delimiter
+	ret	z		; delimiter - done
+	jr	ff_skp
+ff_ext:	inc	ix
+ff_adv	inc	hl
+	djnz	ff_adv		; point to ext part
+ff_exte:
+	ld	b,3
+ff_enxt:
+	ld	a,(ix+0)
+	or	a
+	ret	z		; end of string
+	call	delimiter
+	ret	z
+	ld	(hl),a
+	inc	ix
+	inc	hl
+	djnz	ff_enxt
+	ret
+
+; If A contains one of <=>:;_ then set Z flag bit
+delimiter:
+	cp	'<'
+	ret	z
+	cp	'='
+	ret	z
+	cp	'>'
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'_'
+	ret
+
+  endif ;RSX280
 
 ;*******************************************************************
 ; BDOS call open file.
@@ -567,7 +868,9 @@ rename:
 	call	strcpy		; p_name = "mv oldname newname"
 	call	_fork		; fork new process
 	ld	(char),hl	; pid
-	cpw	hl,0
+;	cpw	hl,0
+	ld	a,h
+	or	l
 	jr	nz,parent
 	push	shell		; we are the child
 	push	argv
@@ -743,7 +1046,7 @@ UCASE:	cp	'a'
 	and	5Fh
 	ret
 
-; convert illegal RSX280 filename character to an 'X'.
+; convert illegal RSX280 filename character to a '-'.
 ; (only A..Z and 0..9 are allowed).
 chmap:
 	and	07Fh		; no parity, 7-bit only
@@ -761,7 +1064,7 @@ chmap:
 	jr	nc,chill
 	sub	a,32		; 'a'-'z' is uppercased
 	ret
-chill:	ld	a,'X'		; Illegal is an 'X'
+chill:	ld	a,'-'		; Illegal is an '-'
 	ret
 
 ; Get next non-blank char.
@@ -824,7 +1127,24 @@ char_avail:
   endif ;UZI280
 
   if RSX280
-;**TODO
+	ld	hl,0
+	push	de
+	ld	e,TIEFN
+	sc	.RDEF		; Read event-flag
+	pop	de
+	or	a		; Not set, nothing in buffer
+	ret	z
+
+	call	$TTGST		; Is there any char in queue?
+	ret	z		; No, return 0 in HL and carry set
+	ld	hl,(TTQ)	; TQ.IP in L, TQ.OP in H
+	ld	a,l
+	cp	h		; if TQ.OP > TQ.IP the ring
+	jr	nc,ca_1		;  buffers have wrapped
+	add	a,64		; (TTQ input queue is 64 bytes)
+ca_1:	sub	h
+	ld	h,0
+	ld	l,a		; return count and carry clear
 	ret
   endif ;RSX280
 
@@ -837,6 +1157,7 @@ ret_1:
 
 ; read one character from stdin
 readchar:
+  if UZI280
 	push	stdin
 	push	char
 	push	1
@@ -845,10 +1166,17 @@ readchar:
 	pop	de
 	pop	de
 	pop	de
+  endif ;UZI280
+
+  if RSX280
+	call	$TTGC		; get a character
+	ld	(char),a
+  endif ;RSX280
 	ret
 
 ; write one char to stdout
 writechar:
+  if UZI280
 	push	stdout
 	push	char
 	push	1
@@ -857,6 +1185,41 @@ writechar:
 	pop	de
 	pop	de
 	pop	de
+  endif ;UZI280
+
+  if RSX280
+	ld	a,(outflag)	; Check output flag
+	or	a		; If it is non-zero, output nothing
+	jr	nz,outchr1
+
+	ld	a,(char)	; Output the character
+	call	$TTOUT
+
+outchr1:
+	push	hl		; Update cursor position
+	ld	hl,curpos
+	cp	RUBOUT		; Rubouts don't do anything
+	jr	z,wc_ret
+	inc	(hl)		; Bump cursor
+	cp	' '
+	jr	nc,wc_ret	; Printing character
+	dec	(hl)		; Backup cursor
+	ld	a,(hl)		; Is it at start of line?
+	or	a
+	jr	z,wc_ret	; Yes, ignore it
+	ld	a,(char)
+	cp	BS		; Is it a backspace?
+	jr	nz,wc_2
+	dec	(hl)		; Yes, backup pointer by 1
+	jr	wc_ret
+wc_2:	cp	LF		; Is it a linefeed?
+	jr	nz,wc_ret
+	ld	(hl),0		; reset cursor to start of line
+wc_ret:	pop	hl
+	ret
+
+  endif ;RSX280
+
 	ret
 
 ; read 128 bytes
@@ -889,6 +1252,7 @@ write128:
 ; CP/M Emulator set-up
 ;
 ; main(argc, argv)
+
 main::
   if UZI280
 	ld	hl,4
@@ -928,20 +1292,29 @@ init_0:	ld	(hl),a		;  are closed)
 	defb	CR,LF,'RSX280 CP/M emulator ',0
 	ld	hl,VERSION
 	call	$MSGHL
-	call	$CRLF
-
 reentry:
 	call	$FLINP		; flush input buffer
 	call	$PRINT		; output prompt
 	defb	'X>',0
 
-	ld	hl,ttibuf
-	ld	(ttiptr),hl	; reset line pointer
-	ld	e,ttibsz
-	call	GETLN		; read a command line
-	jp	c,$EXIT		; if ^C or ^Z typed we're done
+	ld	a,2		; Cursor is at column 2 (counts from 0)
+	ld	(curpos),a
+	xor	a		; Reset flag to allow console echo
+	ld	(outflag),a
 
-	ld	hl,ttibuf	; Parse the input line
+	ld	hl,ttibuf
+	push	hl
+	pop	ix		; into IX too
+	ld	e,ttibsz
+	call	rdbuf
+	ld	a,(ix+1)	; how many characters entered?
+	or	a
+	jr	z,reentry	; none
+
+	ld	a,(ix+2)	; Look for Ctrl-Z
+	cp	EOF
+	jp	z,$EXIT		; Yes, exit
+
 	call	getnb		; skip white-space
 	jr	z,reentry	; there was nothing
 	cp	CR		; EOL?
@@ -967,8 +1340,9 @@ reentry:
 	cpw	hl,-1
 	jr	nz,arg_5	; opened
 
-notfnd:	ld	hl,(p_argv)	; not found
+notfnd:
 	call	$CRLF
+	ld	hl,(p_argv)	; not found
 	call	$MSGHL		; output argv[0] followed
 	call	$PRINT		;  by a '?' for unknown
 	defb	'?',CR,LF,0	;  command
@@ -983,7 +1357,9 @@ ldcom1:	push	128		; number of bytes to read at a time
 	; number of bytes read returned in BC
 	ld	h,b
 	ld	l,c
-	cpw	hl,0		; nothing read?
+;	cpw	hl,0		; nothing read?
+	ld	a,h
+	or	l
 	jr	z,ldcom2
 	pop	de		; remove nchars from stack
 	pop	de		; buffer address from stack
@@ -996,21 +1372,23 @@ ldcom1:	push	128		; number of bytes to read at a time
 ldcom3:
 	call	_close
 	pop	de
+	call	$PRINT
+	defb	'BAD LOAD',0
 	jr	notfnd		; Error
 
 ldcom2:	pop	de		; clean up stack (byte count)
 	pop	(topcom)	; save top load address
-	call	_close
-	pop	de		; LUN
+	call	_close		; (LUN is still on the stack)
+	pop	de		; discard it
 	; .COM file loaded
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
-	defb	CR,LF,'Program loaded 0100-',0
+	defb	CR,LF,'%CPM-I-Program loaded 0100-',0
 	ld	hl,(topcom)
 	call	$HLHEX
 	call	$CRLF
       if 0
-	call	dumptpa
+	call	dumptpa		; Let's see a dump of the TPA
       endif
     endif ;DEBUG
 
@@ -1021,18 +1399,18 @@ ldcom2:	pop	de		; clean up stack (byte count)
 	ld	hl,p_argv
 	ld	de,(argc)
   endif
-
+	;Now we assemble the command parameters at 0080h
 	;argv in HL
 	;argc in DE
+	push	de
 	ld	a,e
 	cp	1
 	jr	nz,m_33
-	xor	a
-	ld	(080h),a
+	ldw	(cpmdma),0
 	jp	m_2		; no file arguments
 m_33:	ld	bc,0		; length counter
 	push	bc
-	ld	de,082h		; CPM command line buffer
+	ld	de,cpmdma+2	; CPM command line buffer
 	push	hl		; save argv pointer
 m_3:	pop	hl		; hl pointer to argv
 	inc	hl
@@ -1062,14 +1440,38 @@ m_55:	pop	hl		; forget argv pointer
 	xor	a
 	ld	(de),a		; terminate the string
 	ld	a,c		; get length
-	ld	(080h),a
+	ld	(cpmdma),a
 	ld	a,' '
-	ld	(081h),a
+	ld	(cpmdma+1),a
 m_2:
-	ld	hl,080h
+	ld	hl,cpmdma		; set default DMA address
 	ld	(dmaadr),hl
 
+	; now set-up the CP/M default
+	; File Control Block at 005Ch
+
+	ld	hl,cpmfcb1	; clear the FCB area
+	ld	b,36
+m_0:	ld	(hl),0
+	inc	hl
+	djnz	m_0
+
+	pop	de		; restore argc
+	ld	a,e
+	cp	1		; No parameters
+	jr	z,parm_0
+	cp	2+1		; Two parameters?
+	jr	c,parm_1	; No - must be only one
+	ld	ix,p_argv+2*2	; Point IX to p_argv[2]
+	ld	hl,cpmfcb2	; point HL to second FCB area
+	call	fillfcb		; copy to FCB
+parm_1:	ld	ix,p_argv+2*1	; point IX to p_argv[1]
+	ld	hl,cpmfcb1	; point HL to first FCB area
+	call	fillfcb
+parm_0:
+
 	; make BDOS and BIOS entry points
+
 	ld	a,0c3h
 	ld	(0000),a
 	ld	(0005),a
@@ -1080,12 +1482,16 @@ m_2:
 
   if 0 ;DEBUG
 	push	hl
-	call	dumppg0
+	call	dumppg0		; Show page zero to see it's all OK
 	pop	hl
   endif
 
 	ld	a,0ffh		; enable lowercase input
 	ld	(ttlc),a
+
+  if not DEBUG
+	ldw	(CCFLG),0FFFFh	; disable Ctrl-C checking
+  endif
 
 	ld	sp,hl		; set stack pointer to BDOS entry
 
@@ -1139,8 +1545,11 @@ TTAST:	ex	(sp),hl		; fetch character from stack, save HL
 	ld	a,c
 	cp	03h		; ^C ?
 	jr	nz,ast1
-	call	qinit		; clear input queue if yes
-	ld	hl,CCFLG+1
+	ld	hl,CCFLG	; Check Ctrl-C flag
+	ld	a,(hl)
+	or	a
+	call	z,qinit		; clear input queue if yes
+	inc	hl
 	set	7,(hl)		; set ^C flag
 ast1:	call	qput		; store char in queue
 	ld	e,TIEFN
@@ -1172,7 +1581,7 @@ arg_z:	ldw	(ix+0),hl
 	pop	ix
 
 	ldw	(ix+0),hl	; save argv[0] (program name)
-	ld	c,0		; for computing argc
+	ld	c,1		; for computing argc
 
 arg_0:	ld	a,(hl)		; scan for white-space
 	or	a
@@ -1207,7 +1616,6 @@ arg_1a:	ld	(hl),0
 arg_2:	ld	ix,p_argv	; IX points to argv[0]
 	ld	d,0		; DE is argc
 	ld	e,c
-	INC	DE
 
     if 0 ;DEBUG
 	call	$PRINT
@@ -1236,6 +1644,20 @@ arg_4:
     endif ;DEBUG
 
 	ex	de,hl		; return argc value
+	ret
+
+;*******************************************************************
+; Check if any character is available in the console buffer
+;
+; Returns zero in A if none available
+;
+
+$TTGST:	call	$FLUSH
+	push	ix
+	ld	ix,TTQ
+	ld	a,(ix+TQ.OP)
+	cp	(ix+TQ.IP)
+	pop	ix
 	ret
 
 ;*******************************************************************
@@ -1269,6 +1691,7 @@ ci2:	ld	hl,ttlc
 qinit:	xor	a
 	ld	(ix+TQ.IP),a
 	ld	(ix+TQ.OP),a
+
 	ret
 
 ;*******************************************************************
@@ -1311,131 +1734,25 @@ qput:	ld	a,(ix+TQ.IP)
 ; Flush (discard) input buffer
 $FLINP: push	ix
 	push	hl
+
 	ld	ix,TTQ
 	call	qinit		; reset terminal input queue
+
 	ld	hl,ttibuf
-	ld	(ttiptr),hl	; clear input line
+
+;	ld	(hl),ttibsz	; clear buffer
+;ZSM4 generates P errors if the above line is used
+	ld	(hl),126
+	inc	hl
+	ld	(hl),1
+	inc	hl
 	ld	(hl),EOF
+	ld	(ttiptr),hl	; clear input line
+	inc	hl
+	ld	(hl),0
+
 	pop	hl
 	pop	ix
-	ret
-
-;*******************************************************************
-; Character input (line-buffered)
-$TTIN:	call	$FLUSH		; flush any pending output
-	push	hl
-tt0:	ld	hl,(ttiptr)	; get line pointer into HL
-	ld	a,(hl)		; fetch character
-	cp	EOF		; end of line?
-	jr	nz,tt1		; return if not
-	push	de
-	push	bc
-	ld	hl,ttibuf
-	ld	(ttiptr),hl	; else reset line pointer
-	ld	e,ttibsz
-	call	GETLN		; and collect a new line
-	pop	bc
-	pop	de
-	jr	tt0		; loop
-tt1:	inc	hl		; advance line pointer
-	ld	(ttiptr),hl
-	pop	hl
-	or	a
-	ret
-
-;*******************************************************************
-; Read line from terminal into HL buffer, max length in E
-;
-; This routine permits some rudimentary line editing with
-; character delete (BS or DEL), line delete (^U) and retype
-; (^R) functions
-
-GETLN:	ld	b,1		; B contains the character position
-	ld	(glbpsv),hl	; save buffer pointer for ^R
-gln1:	call	$TTGC
-	cp	BS		; backspace?
-	jr	z,del
-	cp	RUBOUT		; DEL?
-	jr	z,del		; handle like backspace
-	cp	CR		; CR?
-	jr	z,eol
-	ld	c,a		; save char in C
-	ld	a,b		; check length
-	cp	e		; maximum count reached?
-	jr	nc,glnerr	; jump if yes
-	ld	a,c		; check character
-	cp	' '		; control char?
-	jr	nc,gln2		; jump if not
-	ld	a,'^'		; else echo it as ^x
-	call	$TTOUT
-	ld	a,c
-	add	a,'@'
-	call	$TTOUT
-	ld	a,c
-	cp	3		; ^C?
-	jr	z,ctrlc
-	cp	EOF		; ^Z?
-	jr	z,ctrlz
-	cp	15h		; ^U?
-	jr	z,ctrlu
-	cp	12h		; ^R?
-	jr	z,glshow
-	jr	gln3
-
-gln2:	call	$TTOUT		; echo printable character
-gln3:	ld	(hl),c		; store it
-	inc	hl
-	inc	b
-	jr	gln1
-
-del:	dec	b		; backup one char
-	jr	z,GETLN		; if zero, start again
-	call	bcksp
-	dec	hl
-	dec	c
-	ld	a,(hl)		; if it was a control char
-	cp	' '		;  then we need to erase
-	call	c,bcksp		;   also the '^'
-	jr	gln1
-
-glshow:	push	hl
-	ld	(hl),0
-	call	$CRLF
-	ld	hl,(glbpsv)	; re-type buffer
-	call	$MSGHL
-	pop	hl
-	jr	gln1
-
-bcksp:	call	$PRINT
-	defb	BS,' ',BS,0
-	ret
-
-glnerr: ld	a,7		; ring the BELL
-	call	$TTOUT
-	jr	gln1
-
-ctrlu:	dec	b		; ^U discards current input
-	ld	c,b		;  and restarts input
-	ld	b,0
-	or	a		; move the pointer back to
-	sbc	hl,bc		;  the beginning of buffer
-	call	$CRLF		; new line
-	jr	GETLN
-
-ctrlc:	ld	d,c		; ^C discards input
-	dec	b		;  and returns EOF
-	ld	c,b		;  (carry flag set)
-	ld	b,0
-	or	a
-	sbc	hl,bc
-	ld	a,d
-ctrlz:	scf
-eol:	push	af
-	ld	(hl),a		; store terminator char
-	call	$CRLF		; and advance line
-	inc	hl
-	ld	(hl),0		; string terminator
-	pop	af
 	ret
 
 ;*******************************************************************
@@ -1639,21 +1956,13 @@ du_2:	ld	a,(hl)
 
 ;*******************************************************************
 ; Exit program
+$EXITC:	call	$CRLF
 $EXIT:	call	$FLINP		; flush input buffer
 	ld	c,LUNTI
 	call	DETACH
 	ld	hl,EX.SUC	; Exit to monitor with success
 	SC	.EXIT
-
-;*******************************************************************
-iseol:	or	a
-	ret	z
-	cp	CR
-	ret	z
-	cp	LF
-	ret	z
-	cp	EOF
-	ret
+	halt			; We should never get here
 
   endif ;RSX280
 
@@ -1722,7 +2031,7 @@ DISP:	ret	nc		; no error
 
 ; int open(char *name,int flag)
 ;
-; Open a file with the filename in the string name with mode flag
+; Open a file with the given "name" and access mode flag
 ;
 ; Parameters passed on the stack
 ;
@@ -1750,7 +2059,7 @@ op_0:	bit	0,(hl)
 	cp	luntbsz+1
 	jr	c,op_0
 
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-F-No free LUN',0
     endif ;DEBUG
@@ -1803,7 +2112,7 @@ op_3:	push	hl
 	pop	ix
 	jr	nc,op_4		; It parsed correctly
 
-    if DEBUG
+    if 0 ;DEBUG
 	push	af
 	call	$PRINT
 	defb	CR,LF,'%OPEN-F-Parse filename failed',0
@@ -1827,7 +2136,7 @@ op_4:
 	jr	op_err
 
 op_creat:
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-Creating new file',0
     endif ;DEBUG
@@ -1861,7 +2170,7 @@ op_6:	jp	c,op_err
 op_err:	ld	l,a		; save RSX280 error in errno
 	ld	h,0
 	ld	(errno),hl
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-E-Failed. Error code ',0
 	call	$HLHEX
@@ -1886,11 +2195,9 @@ _close:
     endif ;DEBUG
 
 	ldw	hl,(sp+2)
-	ld	a,h
-	or	l
-	jp	z,cl_err	; LUN cannot be zero
-	cpw	hl,luntbsz+1
-	jp	nc,cl_err	; LUN > maximum allowed
+	call	checklun
+	jr	nc,cl_err
+
 	ld	(opnlun),hl
 	ld	b,h
 	ld	c,l
@@ -1919,17 +2226,33 @@ cl_3:	push	hl
 	pop	af
 	ret	nc		; No errors
 
-    if DEBUG
+	ld	l,a		; Error code from FCLOSE
+	ld	h,0
+
+cl_err:
+    if 0 ;DEBUG
 	push	af
 	call	$PRINT
 	defb	CR,LF,'%CLOSE-E-Error closing file',0
 	pop	af
     endif ;DEBUG
 
-cl_err:	ld	l,a
-	ld	h,0
 	ld	(errno),hl
 	ld	hl,-1
+	ret
+
+; Check the LUN in HL is valid
+; return Carry Set if it is
+; Return Carry clear if not and error code in HL
+;
+checklun:
+	ld	a,h
+	or	l
+	jp	z,lun_err	; LUN cannot be zero
+	cpw	hl,luntbsz+1
+	ret	c
+lun_err:
+	ld	hl,E.INV	; LUN > maximum allowed
 	ret
 
 ; creat(char *name,int mode)
@@ -1989,23 +2312,6 @@ _read:
 
 	ldw	ix,(sp+4)	; point to buffer
 	ldw	hl,(sp+6)	; d
-	cpw	hl,LUNTI	; is it the console LUN?
-	jr	nz,rd_0		; no
-
-_rdtty:
-	ldw	hl,(sp+2)	; nbytes
-	push	hl
-rd_ti:	ld	a,h
-	or	l
-	jr	z,rd_tid	; no more
-	call	$TTGC		; get a character
-	ld	(ix+0),a	; into buffer
-	inc	ix
-	dec	hl
-	jr	rd_ti
-rd_tid:	pop	bc		; return number of bytes read in BC
-	or	a		; clear carry (success)
-	ret
 
 rd_0:	; read from a file - buf ptr is in IX
         ld	b,h		; LUN -> BC
@@ -2059,25 +2365,9 @@ _write:
 
 	ldw	ix,(sp+4)	; point to buffer
 	ldw	hl,(sp+6)	; d
-	cpw	hl,LUNTI	; is it the console LUN?
-	jr	nz,wr_0		; no
+	call	checklun
+	jr	nc,wr_err	; Invalid LUN
 
-_wrtty:
-	ldw	hl,(sp+2)	; nbytes
-	push	hl
-wr_ti:	ld	a,h
-	or	l
-	jr	z,wr_tid	; no more
-	ld	a,(ix+0)	; fetch char
-	call	$TTOUT		; output a character
-	inc	ix
-	dec	hl
-	jr	wr_ti
-wr_tid:	pop	bc		; return number of bytes written in BC
-	or	a		; clear carry (success)
-	ret
-
-wr_0:	; write to a file - buf ptr is in IX
         ld	b,h		; LUN -> BC
 	ld	c,l
 	ld	de,FCSIZ+512	; Select FSR for this LUN
@@ -2103,7 +2393,7 @@ wr_3:	push	ix		; juggle registers
 	ret	nc		; done
 	ld	h,0
 	ld	l,a
-	ld	(errno),hl	; put error code into errno
+wr_err:	ld	(errno),hl	; put error code into errno
 	ld	hl,-1
 	scf
 	ret
@@ -2158,6 +2448,8 @@ _conist:
 
 ; Dummy routine for unsupported BIOS calls
 dummy:
+  if UZI280
+; write(2,"Illegal BIOS call\n",18);
 	push	stderr
 	push	biosmsg
 	push	biosml		; length of message
@@ -2165,8 +2457,13 @@ dummy:
 	pop	de
 	pop	de
 	pop	de
-; write(2,"Illegal BIOS call\n",18);
 ; 	fall through
+  endif ;UZI280
+
+  if RSX280
+	ld	hl,biosmsg
+	call	$MSGHL
+  endif ;RSX280
 
 ; end of program run
 
@@ -2184,7 +2481,7 @@ done:
 
     if DEBUG
 	call	$PRINT
-	defb	CR,LF,'Program exit',CR,LF,0
+	defb	CR,LF,'%CPM-I-Program exit',CR,LF,0
     endif ;DEBUG
 
 	; Close any open files
@@ -2206,7 +2503,8 @@ do_2:	inc	hl
 
 	xor	a
 	ld	(ttlc),a	; Uppercase enable
-	jp	reentry
+	ldw	(CCFLG),0	; Re-enable Ctrl-C processing
+	jp	reentry		; Go and get next emulator command
   endif ; RSX280
 
 ;*******************************************************************
@@ -2258,7 +2556,8 @@ VERSION: defb	'V0.99'
   if DEBUG
 	defb	' [DEBUG]'
   endif ;DEBUG
-	defb	0
+	defb	CR,LF,'Use ^Z followed by Return/Enter to exit.'
+	defb	CR,LF,0
 
 argc:	defs	2
 p_argv:	defs	10*2		; Room for 10 pointers (0..9)
@@ -2297,8 +2596,10 @@ ttlc:	defs	1		;lowercase input flag
 
 ; Console input line
 ttibsz	equ	126
-ttibuf:	defs	ttibsz+2	;input line buffer (and space for CR and NUL)
-ttiptr:	defs	2		;input line pointer
+ttiptr:	defw	ttibuf		; pointer to buffer
+ttibuf:	defb	ttibsz		; first byte has size
+	defb	0		; number of characters in buffer
+	defs	ttibsz		; the line buffer
 
 ; Console output line
 glbpsv:	defs	2
@@ -2307,6 +2608,14 @@ ttoptr:	defw	ttobuf		;output pointer
 ttobuf:	defs	128		;buffer
 
 CCFLG:	defs	2		;ctrl-C break flag
+
+; BDOS console storage (RDBUF)
+outflag:
+	defb	0		; output flag (non zero means no output)
+starting:
+	defb	2		; starting position for cursor
+curpos:	defb	0		; cursor position (0=start of line)
+
 
   endif ;RSX280
 

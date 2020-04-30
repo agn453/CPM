@@ -5,11 +5,74 @@
 	.z80
 
 start:	ld	c,9	; print string
-	ld	de,msg
+	ld	de,msg0
 	call	5
+	ld	c,1	; read a character
+	call	5
+        push	af	; save it
+	ld	e,a
+	ld	c,2	; echo it back
+	call	5
+	ld	c,9
+	ld	de,msg1
+	call	5
+	pop	af
+	call	ahex	; print char in hex
+	ld	c,9
+	ld	de,msg2
+	call	5
+getc:	ld	e,0FFh
+	ld	c,6
+	call	5
+	or	a	; anything typed?
+	jr	nz,gotc	; yes
+	ld	e,'.'
+	ld	c,6	; no - output a '.'
+	call	5
+	call	delay
+	jr	getc
+gotc:	push	af
+	ld	c,9
+	ld	de,msg3
+	call	5
+	pop	af
+	call	ahex
 	jp	0
 
-msg:	defb	13,10,'Hello from CP/M',13,10,'$'
+; Print value in A to console in hexadecimal
+
+ahex:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	chex
+	pop	af
+chex:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	ld	e,a
+	ld	c,2		; Console output
+	jp	5
+
+delay:	ld	hl,0
+dly1:	dec	hl
+	ld	a,h
+	or	l
+	jr	nz,dly1
+	ret
+
+msg0:	defb	13,10,'Hello from CP/M'
+	defb	13,10,10,'Press a key : $'
+
+msg1:	defb	13,10,10,'You typed a character with this value (in hex) $'
+
+msg2:	defb	13,10,10,'Now checking direct console I/O'
+	defb	13,10,10,'Type some keys : $'
+
+msg3:	defb	13,10,10,'This time you typed $'
 
 	end	start
 
