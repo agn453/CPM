@@ -9,7 +9,7 @@
 ;	Stefan Nitschke, 13.3.1996
 ;
 ;	Adaption and programming for RSX280 by
-;	Tony Nicholson, 29-Apr-2020
+;	Tony Nicholson, 01-May-2020
 ;
 ;  This program is free software; you can redistribute it and/or
 ;  modify it under the terms of the GNU General Public License as
@@ -108,23 +108,27 @@ cpmbios	equ	04a00h+cpmoffset ; BIOS only emulates character I/O
 ;/*1*/	char	name[8];	/* file name */
 ;/*9*/	char	ext[3];		/* file type */
 ;/*12*/	char	ex;		/* file extent */
-;/*13*/	int	magic;		/* UZI280/RSX280 open file magic number */
-;/*15*/	char	rec;		/* number of records in present extent */
-;/*16*/	char	desc;		/* UZI280 file number/RSX280 LUN */
-;/*17*/	char	dm[15];		/* CP/M disk map */
-;/*32*/	char	nr;		/* next record to read or write */
+;/*13*/ char	s1;		/* system use s1 */
+;/*14*/	char	s2;		/* system use s2 */
+;/*15*/	char	rc;		/* number of records in present extent */
+;/*16*/	char	dm[10];		/* Reserved for system use (disk map) */
+;/*26*/ int	rec;		/* UZI280/RSX280 internal record count */
+;/*28*/	int	desc;		/* UZI280 file number/RSX280 LUN */
+;/*30*/	int	magic;		/* UZI280/RSX280 open file magic number */
+;/*32*/	char	cr;		/* current record to read or write */
 ;/*33*/	unsigned ranrec;	/* random record number (24 bit no. ) */
 ;/*35*/	char	hr_rec;		/*   "       "   high byte */
-;};
+;};F
 fcbname	equ	1
 fcbext	equ	9
-fcbmagic equ	13
-fcbdesc	equ	16
-fcbrec	equ	20		; internal record counter read/write.
+fcbrec	equ	26		; internal record counter read/write.
+fcbdesc	equ	28
+fcbmagic equ	30
+fcbcr	equ	32
 fcbran	equ	33
 
 ; magic number of open file
-; (emulator writes this to S1 and S2 bytes in a CP/M FCB when a file is open)
+; (emulator writes this to dm[15,16] bytes in a CP/M FCB when a file is open)
 MAGIC		equ	12345
 
   if UZI280
@@ -224,11 +228,13 @@ entry:
 	ld	(arg),hl
 	ld	a,c
 	ld	(call),a 	; BDOS function number
+	push	iy		; RSX280 routines use IY
 	push	ix
 	push	hl
-	pop	ix		; (arg) into IX
+	pop	iy		; (arg) into IY
 	call	bdos2
 	pop	ix
+	pop	iy
 	ex	de,hl		; save return val in DE
 	ld	hl,(oldstk)
 	ld	sp,hl
@@ -253,13 +259,13 @@ bdos2:
 ; Convert CP/M FCB name to UZI or RSX file name in variable u_name
 ; Illegal filename characters are replaced with a dash "-".
 ;
-; on entry: IX -> pointer to FCB
+; on entry: IY -> pointer to FCB
 ;
 ; on exit : HL -> pointer to string.
 ;	    DE -> pointer to EOS.
 getname:
 	ld	de,u_name
-	lda	hl,(ix+fcbname)	; get address of name
+	lda	hl,(iy+fcbname)	; get address of name
 	ld	b,8
 g_l1:	ld	a,(hl)
 	inc	hl
@@ -277,7 +283,7 @@ g_l1:	ld	a,(hl)
 	inc	de
 	djnz	g_l1
 g_l2:
-	lda	hl,(ix+fcbext)	; get address of file extension
+	lda	hl,(iy+fcbext)	; get address of file extension
 	ld	a,(hl)
 	cp	' '
 	jr	z,g_l4		; no extension if blank
@@ -323,7 +329,7 @@ set_dma:
 ;*******************************************************************
 ; BDOS call reset dma address
 reset_dma:
-	ld	hl,080h
+	ld	hl,cpmdma
 	ld	(dmaadr),hl
 	ret
 
@@ -351,7 +357,7 @@ pr_lop:	ld	a,(hl)
 	jr	nz,pr_lop
 	dec	de		; forget the '$'
 	push	stdout
-	push	ix		; (arg)
+	push	iy		; (arg)
 	push	de		; count
 	call	_write
 ;	write(1, arg, cnt);
@@ -382,7 +388,9 @@ direct_console:
 	cp	0ffh
 	jr	nz,write_console
 	call	char_avail
-	cpw	hl,0
+;	cpw	hl,0
+	ld	a,h
+	or	l
 	ret	z		; no char available, return zero
 	call	readchar
 	ld	a,(char)
@@ -440,7 +448,9 @@ rc_1:
 ;    return(nread);
 
 rdbuf:	ld	hl,(arg)
-	cpw	hl,0
+;	cpw	hl,0
+	ld	a,h
+	or	l
 	jr	nz,rdb_1
 	ld	hl,080h		; default dma buffer
 	ld	(arg),hl
@@ -479,7 +489,9 @@ rdb_2:	inc	hl
 rdbuf:	ld	a,(curpos)	; save cursor position
 	ld	(starting),a	;  for processing Ctrl-X and Ctrl-H
 	ld	hl,(arg)	; point HL to buffer
-	cpw	hl,0		; Is pointer is zero?
+;	cpw	hl,0		; Is pointer is zero?
+	ld	a,h
+	or	l
 	jr	nz,rdbufg
 	ld	hl,cpmdma	; Yes, use default DMA buffer
 rdbufg:	ld	c,(hl)		; first byte is buffer size
@@ -767,14 +779,23 @@ delimiter:
 ;*******************************************************************
 ; BDOS call open file.
 ;
-; On entry: IX -> pointer to FCB
+; On entry: IY -> pointer to FCB
 ;
 openfile:
+  if RSX280
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%BDOS-I-Open FCB at ',0
+	ld	hl,(arg)
+	call	$HLHEX
+    endif ;DEBUG
+  endif ;RSX280
+
 	; test for reopen
-	ldw	hl,(ix+fcbmagic)
+	ldw	hl,(iy+fcbmagic)
 	cpw	hl,MAGIC
 	jr	nz,open2
-	ldw	hl,(ix+fcbdesc)
+	ldw	hl,(iy+fcbdesc)
 	push	hl
 	call	_close		; was open
 	pop	de
@@ -810,11 +831,13 @@ open2:
   endif ;UZI280
 
 open_ok:
-	ldw	(ix+fcbdesc),hl
+	ldw	(iy+fcbdesc),hl	; save the file number/LUB
 	ld	hl,MAGIC
-	ldw	(ix+fcbmagic),hl
+	ldw	(iy+fcbmagic),hl ; make it magic (opened)
 	ld	hl,0		; return no error
-	ldw	(ix+fcbrec),hl
+	ldw	(iy+fcbrec),hl	; zero internal record count
+	ld	(iy+fcbcr),l	;  and current record byte
+	ld	a,l		; Success (A=0)
 	ret
 no_good:
 	ld	hl,255		; return error
@@ -823,9 +846,17 @@ no_good:
 ;*******************************************************************
 ; CPM bdos call to make (create) a file
 ;
-; On entry: IX -> pointer to FCB
+; On entry: IY -> pointer to FCB
 ;
 makefile:
+  if RSX280
+    if 0 ;DEBUG
+	call	$PRINT
+	defb	CR,LF,'%BDOS-MAKEFILE',0
+	call	dumpfcb
+    endif ;DEBUG
+  endif ;RSX280
+
 	call	getname		; convert to valid filename
 	push	hl		; str adr
 	push	666Q
@@ -835,6 +866,7 @@ makefile:
 	pop	de
 	cpw	hl,-1
 	jp	z,no_good
+  if UZI280
 	push	hl
 	call	_close		; close it
 	pop	de
@@ -846,36 +878,47 @@ makefile:
 	pop	de
 	cpw	hl,-1
 	jp	z,no_good
+  endif ;UZI280
+
 ;    blk->magic= MAGIC;
 ;    blk->desc = desc;
 ;    blk->rec  = 0;
-	ldw	(ix+fcbdesc),hl
+	ldw	(iy+fcbdesc),hl
 	ld	hl,MAGIC
-	ldw	(ix+fcbmagic),hl
+	ldw	(iy+fcbmagic),hl
 	ld	hl,0
-	ldw	(ix+fcbrec),hl
+	ldw	(iy+fcbrec),hl
+	ld	(iy+fcbcr),l
+	ld	a,l
+  if RSX280
+    if 0 ;DEBUG
+	push	af
+	call	dumpfcb
+	pop	af
+    endif ;DEBUG
+  endif ;RSX280
 	ret
 
 ;*******************************************************************
 ; BDOS call close file
 ;
-; On entry: IX -> pointer to FCB
+; On entry: IY -> pointer to FCB
 ;
 closefile:
-	ldw	hl,(ix+fcbdesc)
+	ldw	hl,(iy+fcbdesc)
 	push	hl
 	call	_close
 	pop	de
 	cpw	hl,-1
 	jp	z,no_good
 	ld	hl,0
-	ldw	(ix+fcbmagic),hl
+	ldw	(iy+fcbmagic),hl
 	ret
 
 ;*******************************************************************
 ; BDOS call delete file
 ;
-; On entry: IX -> pointer to FCB
+; On entry: IY -> pointer to FCB
 ;
 delete:
 	call	getname
@@ -890,7 +933,7 @@ delete:
 ;*******************************************************************
 ; BDOS call rename file
 ;
-; On entry: IX -> pointer to FCB
+; On entry: IY -> pointer to FCB
 ;
   if UZI280
 ;    static char cmd[40];
@@ -920,13 +963,15 @@ rename:
 	inc	de
 	push	de		; save string pointer
 	ld	a,fcbdesc
-	add	ix,a		; ix pointer to newname-1
+	add	iy,a		; IY pointer to newname-1
 	call	getname
 	pop	de
 	call	strcpy		; p_name = "mv oldname newname"
 	call	_fork		; fork new process
 	ld	(char),hl	; pid
-	cpw	hl,0
+;	cpw	hl,0
+	ld	a,h
+	or	l
 	jr	nz,parent
 	push	shell		; we are the child
 	push	argv
@@ -959,14 +1004,14 @@ rename:
 ;*******************************************************************
 ; BDOS call read file seq.
 ;
-; On entry: IX -> pointer to FCB
+; On entry: IY -> pointer to FCB
 ;
 readfile:
 	call	read128
 ;    nread = read(blk->desc, dmaadr, 128);
 	cpw	hl,-1
 	jp	z,no_good
-	incw	(ix+fcbrec)
+	incw	(iy+fcbrec)
 ;    if (nread < 128)
 ;	dmaadr[nread] = 0x1a;
 	ld	a,l
@@ -984,7 +1029,7 @@ r_ok:
 ;*******************************************************************
 ; BDOS function write file seq.
 ;
-; On entry: IX -> pointer to FCB
+; On entry: IY -> pointer to FCB
 ;
 writefile:
 ;ifdef EDITOR
@@ -999,18 +1044,18 @@ writefile:
 ;    if (write(blk->desc, dmaadr, 128) != 128 )
 	cpw	hl,128
 	jp	nz,no_good
-	incw	(ix+fcbrec)
+	incw	(iy+fcbrec)
 	ld	hl,0
 	ret
 
 ;*******************************************************************
 ; BDOS Random read/write. Max file length 8192 K
 ;
-; On entry: IX -> pointer to FCB
+; On entry: IY -> pointer to FCB
 ;
 setrandom:
-	ldw	hl,(ix+fcbrec)
-	ldw	(ix+fcbran),hl
+	ldw	hl,(iy+fcbrec)
+	ldw	(iy+fcbran),hl
 	ret
 
 readrandom:
@@ -1042,10 +1087,10 @@ writerandom:
 ; record seek (128 byte) for read/write random
 rseek:
 	push	hl		; save HL
-	ldw	hl,(ix+fcbdesc)
+	ldw	hl,(iy+fcbdesc)
 	push	hl
-	ldw	hl,(ix+fcbran)
-	ldw	(ix+fcbrec),hl
+	ldw	hl,(iy+fcbran)
+	ldw	(iy+fcbrec),hl
 	ld	e,0
 	ld	a,l
 	and	011b		; a = ranrec % 4
@@ -1060,9 +1105,9 @@ rseek:
 	pop	de
 	pop	de
 
-	ldw	hl,(ix+fcbdesc)
+	ldw	hl,(iy+fcbdesc)
 	push	hl
-	ldw	hl,(ix+fcbran)
+	ldw	hl,(iy+fcbran)
 	srl	h
 	rr	l		; HL / 2
 	srl	h
@@ -1280,7 +1325,7 @@ wc_ret:	pop	hl
 
 ; read 128 bytes
 read128:
-	ldw	hl,(ix+fcbdesc)
+	ldw	hl,(iy+fcbdesc)
 	push	hl
 	push	(dmaadr)
 	push	128
@@ -1293,7 +1338,7 @@ read128:
 
 ; write 128 bytes
 write128:
-	ldw	hl,(ix+fcbdesc)
+	ldw	hl,(iy+fcbdesc)
 	push	hl
 	push	(dmaadr)
 	push	128
@@ -1414,7 +1459,9 @@ ldcom1:	push	128		; number of bytes to read at a time
 	; number of bytes read returned in BC
 	ld	h,b
 	ld	l,c
-	cpw	hl,0		; nothing read?
+;	cpw	hl,0		; nothing read?
+	ld	a,h
+	or	l
 	jr	z,ldcom2
 	pop	de		; remove nchars from stack
 	pop	de		; buffer address from stack
@@ -1436,7 +1483,7 @@ ldcom2:	pop	de		; clean up stack (byte count)
 	call	_close		; (LUN is still on the stack)
 	pop	de		; discard it
 	; .COM file loaded
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%CPM-I-Program loaded 0100-',0
 	ld	hl,(topcom)
@@ -1502,11 +1549,6 @@ m_2:
 	ld	hl,cpmdma	; set default DMA address
 	ld	(dmaadr),hl
 
-    if DEBUG
-	call	$PRINT
-	defb	CR,LF,'%CPM-DMA-loaded',0
-    endif
-
 	; now set-up the CP/M default
 	; File Control Block at 005Ch
 
@@ -1521,25 +1563,16 @@ m_0:	ld	(hl),0
 	jr	z,parm_0
 	cp	2		; One parameter?
 	jr	z,parm_1	; Yes
-    if DEBUG
-	call	$PRINT
-	defb	CR,LF,'%CPM-Fill FCB2',0
-    endif ;DEBUG
 	ld	ix,(p_argv+2*2)	; Point IX to p_argv[2]
 	ld	hl,cpmfcb2	; point HL to second FCB area
 	call	fillfcb		; copy to FCB
 parm_1:
-    if DEBUG
-	call	$PRINT
-	defb	CR,LF,'%CPM-Fill FCB1',0
-    endif ;DEBUG
 	ld	ix,(p_argv+2*1)	; point IX to p_argv[1]
 	ld	hl,cpmfcb1	; point HL to first FCB area
 	call	fillfcb
 parm_0:
 
 	; make BDOS and BIOS entry points
-
 	ld	a,0c3h
 	ld	(0000),a
 	ld	(0005),a
@@ -1548,7 +1581,7 @@ parm_0:
 	ld	hl,bdos
 	ld	(0006),hl
 
-  if DEBUG
+  if 0 ;DEBUG
 	push	hl
 	call	dumppg0		; Show page zero to see it's all OK
 	pop	hl
@@ -1557,7 +1590,9 @@ parm_0:
 	ld	a,0ffh		; enable lowercase input
 	ld	(ttlc),a
 
-  if not DEBUG
+  if DEBUG
+	call	$CRLF		; program starts on a new line
+  else
 	ldw	(CCFLG),0FFFFh	; disable Ctrl-C checking
   endif
 
@@ -1685,7 +1720,7 @@ arg_2:	ld	ix,p_argv	; IX points to argv[0]
 	ld	d,0		; DE is argc
 	ld	e,c
 
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'<argv>',CR,LF,0
 	ldw	hl,(ix+0)
@@ -1929,7 +1964,25 @@ $CHEX:	and	0Fh
 	daa
 	jp	$TTOUT
 
-      if 1
+      if 0
+dumpfcb:
+	call	$PRINT
+	defb	CR,LF,'<fcb>',0
+	push	iy		; CP/M FCB pointer is in IY
+	ex	(sp),hl
+	push	bc
+	ld	b,36
+du_f0:	ld	a,(hl)
+	call	$AHEX
+	inc	hl
+	djnz	du_f0
+	call	$CRLF
+	pop	bc
+	pop	hl
+	ret
+      endif
+
+      if 0
 dumppg0:
 	call	$PRINT
 	defb	CR,LF,'<page0>',0
@@ -2108,7 +2161,7 @@ DISP:	ret	nc		; no error
 _open:
     if DEBUG
 	call	$PRINT
-	defb	CR,LF,'%OPEN-I-Filename "',0
+	defb	CR,LF,'%OPEN-I-File "',0
 	ldw	hl,(sp+4)
 	call	$MSGHL
 	call	$PRINT
@@ -2162,14 +2215,6 @@ op_2:	dec	bc		; index by LUN-1
 op_3:	push	hl
 	pop	ix
 	; IX points to the file storage region for this LUN
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%OPEN-I-FSR address ',0
-	push	ix
-	pop	hl
-	call	$HLHEX
-	call	dumpfsr
-    endif ;DEBUG
 	ldw	hl,(sp+2)	; get flag to HL
 	ld	(ix+FC.MODE),L	; set file access mode bit
 
@@ -2183,17 +2228,12 @@ op_3:	push	hl
     if DEBUG
 	push	af
 	call	$PRINT
-	defb	CR,LF,'%OPEN-F-Parse filename failed',0
+	defb	CR,LF,'%OPEN-F-Parse failed',0
 	pop	af
     endif ;DEBUG
 	jr	op_err		; illegal filename
 
-op_4:
-    if 0 ;DEBUG
-	call	dumpfsr
-    endif ;DEBUG
-
-	ldw	hl,(sp+2)	; is it an open for Read?
+op_4:	ldw	hl,(sp+2)	; is it an open for Read?
 	ld	a,l
 	bit	FM.RD,a		;  (or Read/Write)
 	jr	nz,op_5		; yes, open existing file
@@ -2240,7 +2280,7 @@ op_err:	ld	l,a		; save RSX280 error in errno
 	ld	(errno),hl
     if DEBUG
 	call	$PRINT
-	defb	CR,LF,'%OPEN-E-Failed. Error code ',0
+	defb	CR,LF,'%OPEN-E-Error=',0
 	call	$HLHEX
     endif ;DEBUG
 	ld	hl,(opnltbe)	; open failed - reset LUN
@@ -2256,7 +2296,7 @@ op_err:	ld	l,a		; save RSX280 error in errno
 _close:
     if DEBUG
 	call	$PRINT
-	defb	CR,LF,'%CLOSE-I-Close LUN ',0
+	defb	CR,LF,'%CLOSE-I-LUN=',0
 	ldw	hl,(sp+2)
 	call	$HLHEX
 	call	$CRLF
@@ -2301,7 +2341,7 @@ cl_err:
     if DEBUG
 	push	af
 	call	$PRINT
-	defb	CR,LF,'%CLOSE-E-Error closing file',0
+	defb	CR,LF,'%CLOSE-E-Error',0
 	pop	af
     endif ;DEBUG
 
@@ -2327,7 +2367,7 @@ lun_err:
 _creat:
     if DEBUG
 	call	$PRINT
-	defb	CR,LF,'%CREAT-I-Create file "',0
+	defb	CR,LF,'%CREAT-I-file "',0
 	ldw	hl,(sp+4)
 	call	$MSGHL
 	call	$PRINT
@@ -2343,7 +2383,6 @@ _creat:
 	call	_open		;  a new file (a new version)
 	pop	de
 	pop	de
-	; Return the staus from _open
 	ret
 
 ; unlink(char *path)
@@ -2362,9 +2401,9 @@ _unlink:
 ; read(int d, char *buf,unsigned nbytes)
 _read:
 
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
-	defb	CR,LF,'%READ-I-Read from LUN ',0
+	defb	CR,LF,'%READ-I-LUN=',0
 	ldw	hl,(sp+6)
 	call	$HLHEX
 	call	$PRINT
@@ -2415,9 +2454,9 @@ rd_3:	push	ix		; juggle registers
 ; write(int d, char *buf,unsigned nbytes)
 _write:
 
-    if DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
-	defb	CR,LF,'%WRITE-I-Write to LUN ',0
+	defb	CR,LF,'%WRITE-I-LUN=',0
 	ldw	hl,(sp+6)
 	call	$HLHEX
 	call	$PRINT
@@ -2458,6 +2497,19 @@ wr_3:	push	ix		; juggle registers
         ; all set, now do the write
 	call	FWRITE
 	; number of bytes written is returned in BC, CY set on error
+
+    if 0 ;DEBUG
+	push	af
+	push	bc
+	call	$PRINT
+	defb	CR,LF,'%WRITE-I-Written=',0
+	pop	hl
+	push	hl
+	call	$HLHEX
+	pop	bc
+	pop	af
+    endif ;DEBUG
+
 	ret	nc		; done
 	ld	h,0
 	ld	l,a
@@ -2547,10 +2599,12 @@ bdostable:
 	defw	no_good		; 35 - compute file size
 	defw	setrandom	; 36 - set random record
 	defw	reset_dma 	; 37 - reset drive
-	defw	writerandom	; 38 - write random with zero fill
+	defw    no_good		; 38 - access drive (MP/M only)
+	defw	no_good		; 39 - free drive (MP/M only)
+	defw	writerandom	; 40 - write random with zero fill
 ; end of BDOS dispatch table
 
-maxbdosfn equ	(($-bdostable)/2)-1 ; should be 38 (026h)
+maxbdosfn equ	(($-bdostable)/2)-1 ; should be 40 (028h)
 
 	page
 ;

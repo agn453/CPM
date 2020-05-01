@@ -21,3 +21,11 @@ available.
 
 Further documentation will be added at a later time.
 
+Update: 01-May-2020
+-------------------
+
+The original UZI280 version was missing some CP/M BDOS functions.
+These have been added.  Console I/O and Disk file Open/Create/Read/Write
+appear to be working.   Still to-do file Remove, Random access Read/Write,
+Directory Search and some other BDOS functions.
+
