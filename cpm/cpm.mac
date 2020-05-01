@@ -38,37 +38,17 @@
 FALSE	equ	0
 TRUE	equ	not FALSE
 
-ETX	equ	03h
-BS	equ	08h
-CR	equ	0Dh
-LF	equ	0Ah
-FF	equ	0Ch
-TAB	equ	09h
-EOF	equ	1Ah
-RUBOUT	equ	7Fh
-
 RSX280	equ	TRUE
 
 UZI280	equ	not RSX280	; original code preserved
 
 DEBUG	equ	TRUE		; output debugging messages
 
-; CP/M memory sizing
-memsize	equ	60		; 60KB memory size
-topmem	equ	memsize*1024
-cpmoffset equ	topmem-20*1024	; based on standard CP/M 2.2
-
-; Where CP/M expects things to be
-cpmfcb1	equ	0005ch		; FCB 1
-cpmfcb2	equ	0006ch		; FCB 2
-cpmdma	equ	00080h		; Default DMA address and command line
-cpmtpa	equ	00100h		 ; Transient programs are loaded here
-cpmccp	equ	03400h+cpmoffset ; CCP is implemented by this program
-cpmbdos	equ	03c00h+cpmoffset ; BDOS contains emulation code
-cpmbios	equ	04a00h+cpmoffset ; BIOS only emulates character I/O
+;*******************************************************************
+;
+; Include files and externals
 
   if RSX280
-
 	; RSX280 definitions (list off)
 	list	off
     ifdef ZXCC
@@ -97,8 +77,59 @@ cpmbios	equ	04a00h+cpmoffset ; BIOS only emulates character I/O
 
   endif ;RSX280
 
+; Control Characters
+ETX	equ	03h
+BS	equ	08h
+CR	equ	0Dh
+LF	equ	0Ah
+FF	equ	0Ch
+TAB	equ	09h
+EOF	equ	1Ah
+RUBOUT	equ	7Fh
+
+; CP/M memory sizing
+memsize	equ	60		; 60KB memory size
+topmem	equ	memsize*1024
+cpmoffset equ	topmem-20*1024	; based on standard CP/M 2.2
+
+; Where CP/M expects things to be
+cpmfcb1	equ	0005ch		; FCB 1
+cpmfcb2	equ	0006ch		; FCB 2
+cpmdma	equ	00080h		; Default DMA address and command line
+cpmtpa	equ	00100h		 ; Transient programs are loaded here
+cpmccp	equ	03400h+cpmoffset ; CCP is implemented by this program
+cpmbdos	equ	03c00h+cpmoffset ; BDOS contains emulation code
+cpmbios	equ	04a00h+cpmoffset ; BIOS only emulates character I/O
+
+; CP/M File Control Block offsets
+;
+;struct	fcb {
+;/*0*/	char	drive;		/* drive code */
+;/*1*/	char	name[8];	/* file name */
+;/*9*/	char	ext[3];		/* file type */
+;/*12*/	char	ex;		/* file extent */
+;/*13*/	int	magic;		/* UZI280/RSX280 open file magic number */
+;/*15*/	char	rec;		/* number of records in present extent */
+;/*16*/	char	desc;		/* UZI280 file number/RSX280 LUN */
+;/*17*/	char	dm[15];		/* CP/M disk map */
+;/*32*/	char	nr;		/* next record to read or write */
+;/*33*/	unsigned ranrec;	/* random record number (24 bit no. ) */
+;/*35*/	char	hr_rec;		/*   "       "   high byte */
+;};
+fcbname	equ	1
+fcbext	equ	9
+fcbmagic equ	13
+fcbdesc	equ	16
+fcbrec	equ	20		; internal record counter read/write.
+fcbran	equ	33
+
+; magic number of open file
+; (emulator writes this to S1 and S2 bytes in a CP/M FCB when a file is open)
+MAGIC		equ	12345
+
   if UZI280
 
+; Console input/output/error file descriptors
 stdin	equ	0
 stdout	equ	1
 stderr	equ	2
@@ -114,12 +145,14 @@ flag_rw	equ	2	; R/W mode for file open()
 
   if RSX280
 
+; RSX280 Logical Unit Numbers
 LUNFL1	equ	1	; Emulator file access LUN #1
 LUNFL2	equ	2	; Emulator file access LUN #2
 LUNFL3	equ	3	; Emulator file access LUN #3
 LUNFL4	equ	4	; Emulator file access LUN #4
 LUNTI	equ	5	; Terminal Interface LUN (TI:)
 
+; Event flags
 TIEFN	equ	1	; event flag for AST terminal input
 TOEFN	equ	2	; event flag for console output
 FIOEFN	equ	3	; event flag for file I/O
@@ -139,10 +172,10 @@ flag_rw	equ	(1 SHL FM.RD) OR (1 SHL FM.WR)	; R/W mode for file open()
   endif ;RSX280
 	page
 ;*******************************************************************
+;
+; CP/M transient program .COM files are loaded here
 
 	cseg	; The majority of the emulator is in the code segment
-
-; CP/M transient program .COM files are loaded here
 tpa::
 	jp	main		; command line processing
 
@@ -159,7 +192,7 @@ tpa::
 	;replacements.
 
 ; One big region to load CP/M binaries into
-
+;
 	defs	cpmbdos-cpmtpa-3 ; Rest of TPA
 
 ;*******************************************************************
@@ -349,9 +382,7 @@ direct_console:
 	cp	0ffh
 	jr	nz,write_console
 	call	char_avail
-;	cpw	hl,0
-	ld	a,h
-	or	l
+	cpw	hl,0
 	ret	z		; no char available, return zero
 	call	readchar
 	ld	a,(char)
@@ -409,9 +440,7 @@ rc_1:
 ;    return(nread);
 
 rdbuf:	ld	hl,(arg)
-;	cpw	hl,0
-	ld	a,h
-	or	l
+	cpw	hl,0
 	jr	nz,rdb_1
 	ld	hl,080h		; default dma buffer
 	ld	(arg),hl
@@ -449,11 +478,8 @@ rdb_2:	inc	hl
 
 rdbuf:	ld	a,(curpos)	; save cursor position
 	ld	(starting),a	;  for processing Ctrl-X and Ctrl-H
-	push	ix		; We'll use HL for buffer pointer
-	pop	hl
-;	cpw	hl,0		; Is pointer is zero?
-	ld	a,h
-	or	l
+	ld	hl,(arg)	; point HL to buffer
+	cpw	hl,0		; Is pointer is zero?
 	jr	nz,rdbufg
 	ld	hl,cpmdma	; Yes, use default DMA buffer
 rdbufg:	ld	c,(hl)		; first byte is buffer size
@@ -575,24 +601,32 @@ rdbuf17:
 	pop	hl		; Yes, end the line and return
 	ld	(hl),b		; number of characters entered
 
+	dec	hl		; Return with HL pointing to buffer
+
 ;AGN - fall through to output CR,LF
 ;AGN	ld	c,CR
 ;AGN	jr	outchar
 
+; New line on concole
 outcrlf:
 	ld	c,CR
 	call	outchar
 	ld	c,LF
 	jr	outchar
 
+; Backspace cursor
 backup:	call	backup1
 	ld	c,' '
 	call	_conout
 backup1:
 	ld	c,BS
+	; fall through
+
+; Character output from C register
 outchar:
 	jp	_conout
 
+; Check for control char in A, return Z bit set if found
 chkchar:
 	cp	CR
 	ret	z
@@ -605,6 +639,7 @@ chkchar:
 	cp	' '
 	ret
 
+; Show a control character in printable form
 showit:	ld	a,c
 	call	chkchar
 	jr	nc,outcon	; not a control char
@@ -625,6 +660,7 @@ outcon1:
 	jr	nz,outcon1
 	ret
 
+; Cancel RDLIN input line ready for re-input
 newline:
 	ld	c,'#'		; signal a deleted line with a "#"
 	call	outchar
@@ -637,29 +673,31 @@ newln1:	ld	a,(curpos)	; move the cursor back to starting
 	call	outchar
 	jr	newln1
 
-; Copy parameter pointer to by IX into the FCB pointed to by HL
+; Copy parameter pointed to by IX into the CP/M FCB pointed to by HL
 ;
-;**TODO - wildcard characters * and ?
 fillfcb:
-	;assumes Drive field is always 0 - the current drive
-	inc	ix
-	push	ix		; save and init with spaces
+	ld	(hl),0		; always the current drive
+	inc	hl
+	push	hl		; save and init with spaces
 	ld	b,8+3
 	ld	a,' '
 ff_blnk:
-	ld	(ix+0),a
-	inc	ix
+	ld	(hl),a
+	inc	hl
 	djnz	ff_blnk
 
-	pop	ix
+	pop	hl		; restore pointer to FCB
+
 	ld	b,8		; name part is up to 8 chars
 ff_nam:	ld	a,(ix+0)
 	or	a		; end of string?
 	ret	z
-	cp	'.'		; filename delimeter
+	cp	'.'		; filename delimiter
 	jr	z,ff_ext
 	call	delimiter	; is it a delimiter?
 	ret	z		; yes - done
+	cp	'*'		; wildcard?
+	jr	z,ff_nwild
 	ld	(hl),a		; store in FCB
 	inc	ix
 	inc	hl
@@ -672,7 +710,20 @@ ff_skp:	ld	a,(ix+0)	; skip rest of name part
 	call	delimiter
 	ret	z		; delimiter - done
 	jr	ff_skp
-ff_ext:	inc	ix
+ff_nwild:
+	ld	(hl),'?'
+	inc	hl
+	djnz	ff_nwild
+ff_nsk:	inc	ix
+	ld	a,(ix+0)	; skip until '.' or eos
+	or	a
+	ret	z
+	cp	'.'
+	jr	nz,ff_nsk
+ff_ext:	inc	ix		; advance past the '.' or '*'
+	ld	a,b
+	or	a		; all 8 characters?
+	jr	z,ff_exte
 ff_adv	inc	hl
 	djnz	ff_adv		; point to ext part
 ff_exte:
@@ -683,10 +734,17 @@ ff_enxt:
 	ret	z		; end of string
 	call	delimiter
 	ret	z
+	cp	'*'		; wildcard ext?
+	jr	z,ff_ewild
 	ld	(hl),a
 	inc	ix
 	inc	hl
 	djnz	ff_enxt
+	ret
+ff_ewild:
+	ld	(hl),'?'
+	inc	hl
+	djnz	ff_ewild
 	ret
 
 ; If A contains one of <=>:;_ then set Z flag bit
@@ -868,9 +926,7 @@ rename:
 	call	strcpy		; p_name = "mv oldname newname"
 	call	_fork		; fork new process
 	ld	(char),hl	; pid
-;	cpw	hl,0
-	ld	a,h
-	or	l
+	cpw	hl,0
 	jr	nz,parent
 	push	shell		; we are the child
 	push	argv
@@ -1302,16 +1358,17 @@ reentry:
 	xor	a		; Reset flag to allow console echo
 	ld	(outflag),a
 
-	ld	hl,ttibuf
-	push	hl
-	pop	ix		; into IX too
-	ld	e,ttibsz
+	ld	hl,ttibuf	; point HL to input buffer text
+	ld	(arg),hl	; we're calling the BDOS routine
 	call	rdbuf
-	ld	a,(ix+1)	; how many characters entered?
+
+	inc	hl
+	ld	a,(hl)		; how many characters entered?
 	or	a
 	jr	z,reentry	; none
 
-	ld	a,(ix+2)	; Look for Ctrl-Z
+	inc	hl
+	ld	a,(hl)		; Look for Ctrl-Z
 	cp	EOF
 	jp	z,$EXIT		; Yes, exit
 
@@ -1357,9 +1414,7 @@ ldcom1:	push	128		; number of bytes to read at a time
 	; number of bytes read returned in BC
 	ld	h,b
 	ld	l,c
-;	cpw	hl,0		; nothing read?
-	ld	a,h
-	or	l
+	cpw	hl,0		; nothing read?
 	jr	z,ldcom2
 	pop	de		; remove nchars from stack
 	pop	de		; buffer address from stack
@@ -1381,7 +1436,7 @@ ldcom2:	pop	de		; clean up stack (byte count)
 	call	_close		; (LUN is still on the stack)
 	pop	de		; discard it
 	; .COM file loaded
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%CPM-I-Program loaded 0100-',0
 	ld	hl,(topcom)
@@ -1402,12 +1457,12 @@ ldcom2:	pop	de		; clean up stack (byte count)
 	;Now we assemble the command parameters at 0080h
 	;argv in HL
 	;argc in DE
-	push	de
 	ld	a,e
 	cp	1
 	jr	nz,m_33
 	ldw	(cpmdma),0
 	jp	m_2		; no file arguments
+
 m_33:	ld	bc,0		; length counter
 	push	bc
 	ld	de,cpmdma+2	; CPM command line buffer
@@ -1444,8 +1499,13 @@ m_55:	pop	hl		; forget argv pointer
 	ld	a,' '
 	ld	(cpmdma+1),a
 m_2:
-	ld	hl,cpmdma		; set default DMA address
+	ld	hl,cpmdma	; set default DMA address
 	ld	(dmaadr),hl
+
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%CPM-DMA-loaded',0
+    endif
 
 	; now set-up the CP/M default
 	; File Control Block at 005Ch
@@ -1456,16 +1516,24 @@ m_0:	ld	(hl),0
 	inc	hl
 	djnz	m_0
 
-	pop	de		; restore argc
-	ld	a,e
+	ld	a,(argc)	; restore argc
 	cp	1		; No parameters
 	jr	z,parm_0
-	cp	2+1		; Two parameters?
-	jr	c,parm_1	; No - must be only one
-	ld	ix,p_argv+2*2	; Point IX to p_argv[2]
+	cp	2		; One parameter?
+	jr	z,parm_1	; Yes
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%CPM-Fill FCB2',0
+    endif ;DEBUG
+	ld	ix,(p_argv+2*2)	; Point IX to p_argv[2]
 	ld	hl,cpmfcb2	; point HL to second FCB area
 	call	fillfcb		; copy to FCB
-parm_1:	ld	ix,p_argv+2*1	; point IX to p_argv[1]
+parm_1:
+    if DEBUG
+	call	$PRINT
+	defb	CR,LF,'%CPM-Fill FCB1',0
+    endif ;DEBUG
+	ld	ix,(p_argv+2*1)	; point IX to p_argv[1]
 	ld	hl,cpmfcb1	; point HL to first FCB area
 	call	fillfcb
 parm_0:
@@ -1480,7 +1548,7 @@ parm_0:
 	ld	hl,bdos
 	ld	(0006),hl
 
-  if 0 ;DEBUG
+  if DEBUG
 	push	hl
 	call	dumppg0		; Show page zero to see it's all OK
 	pop	hl
@@ -1617,7 +1685,7 @@ arg_2:	ld	ix,p_argv	; IX points to argv[0]
 	ld	d,0		; DE is argc
 	ld	e,c
 
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'<argv>',CR,LF,0
 	ldw	hl,(ix+0)
@@ -1861,7 +1929,7 @@ $CHEX:	and	0Fh
 	daa
 	jp	$TTOUT
 
-      if 0
+      if 1
 dumppg0:
 	call	$PRINT
 	defb	CR,LF,'<page0>',0
@@ -2038,7 +2106,7 @@ DISP:	ret	nc		; no error
 ; Returns the LUN of the open file in HL (or -1 on error)
 ;
 _open:
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-Filename "',0
 	ldw	hl,(sp+4)
@@ -2059,7 +2127,7 @@ op_0:	bit	0,(hl)
 	cp	luntbsz+1
 	jr	c,op_0
 
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-F-No free LUN',0
     endif ;DEBUG
@@ -2071,7 +2139,7 @@ op_1:	ld	(opnltbe),hl	; Save in case open fails
 	; LUN is in BC
 	ld	(opnlun),bc	; Save it
 
-    if 0 ;DEBUG
+    if DEBUG
 	push	bc
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-Using LUN ',0
@@ -2094,14 +2162,14 @@ op_2:	dec	bc		; index by LUN-1
 op_3:	push	hl
 	pop	ix
 	; IX points to the file storage region for this LUN
-  if 0 ;DEBUG
+    if 0 ;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-FSR address ',0
 	push	ix
 	pop	hl
 	call	$HLHEX
 	call	dumpfsr
-  endif ;DEBUG
+    endif ;DEBUG
 	ldw	hl,(sp+2)	; get flag to HL
 	ld	(ix+FC.MODE),L	; set file access mode bit
 
@@ -2112,7 +2180,7 @@ op_3:	push	hl
 	pop	ix
 	jr	nc,op_4		; It parsed correctly
 
-    if 0 ;DEBUG
+    if DEBUG
 	push	af
 	call	$PRINT
 	defb	CR,LF,'%OPEN-F-Parse filename failed',0
@@ -2136,9 +2204,9 @@ op_4:
 	jr	op_err
 
 op_creat:
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
-	defb	CR,LF,'%OPEN-I-Creating new file',0
+	defb	CR,LF,'%OPEN-I-Create file',0
     endif ;DEBUG
 
 	xor	a		; non-contiguous (A=0)
@@ -2158,7 +2226,7 @@ op_5:
 	call	FOPEN		; open existing file
 op_6:	jp	c,op_err
 
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-File opened',CR,LF,0
     endif ;DEBUG
@@ -2170,7 +2238,7 @@ op_6:	jp	c,op_err
 op_err:	ld	l,a		; save RSX280 error in errno
 	ld	h,0
 	ld	(errno),hl
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-E-Failed. Error code ',0
 	call	$HLHEX
@@ -2186,7 +2254,7 @@ op_err:	ld	l,a		; save RSX280 error in errno
 ; Close the opened file with the LUN given by index
 ;
 _close:
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%CLOSE-I-Close LUN ',0
 	ldw	hl,(sp+2)
@@ -2230,7 +2298,7 @@ cl_3:	push	hl
 	ld	h,0
 
 cl_err:
-    if 0 ;DEBUG
+    if DEBUG
 	push	af
 	call	$PRINT
 	defb	CR,LF,'%CLOSE-E-Error closing file',0
@@ -2257,7 +2325,7 @@ lun_err:
 
 ; creat(char *name,int mode)
 _creat:
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%CREAT-I-Create file "',0
 	ldw	hl,(sp+4)
@@ -2294,7 +2362,7 @@ _unlink:
 ; read(int d, char *buf,unsigned nbytes)
 _read:
 
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%READ-I-Read from LUN ',0
 	ldw	hl,(sp+6)
@@ -2347,7 +2415,7 @@ rd_3:	push	ix		; juggle registers
 ; write(int d, char *buf,unsigned nbytes)
 _write:
 
-    if 0 ;DEBUG
+    if DEBUG
 	call	$PRINT
 	defb	CR,LF,'%WRITE-I-Write to LUN ',0
 	ldw	hl,(sp+6)
@@ -2415,10 +2483,115 @@ _seek:
 
   endif ;RSX280
 
-;*******************************************************************
-; The following BIOS routines are located in
-; the BDOS area to maximise available memory
 
+; Stack
+  if RSX280
+
+	cseg
+
+    if (($-tpa) and 1)	; Even address boundary
+	defs	1
+    endif
+
+	defs	256
+  endif
+  if UZI280
+
+	dseg
+
+	defs	30
+  endif
+
+tmpstk:
+
+
+; BDOS function dispatch table (keep this in cseg)
+	cseg
+
+bdostable:
+	defw	done		; 0 - system reset
+	defw	read_console	; 1 - console read
+	defw	write_console	; 2 - console write
+	defw	no_good		; 3 - reader input
+	defw	no_good		; 4 - punch output
+	defw	no_good		; 5 - list output
+	defw	direct_console	; 6 - direct console I/O
+	defw	no_good		; 7 - get IO byte
+	defw	no_good		; 8 - set IO byte
+	defw	print_string	; 9 - print string
+	defw	rdbuf		; 10 - read console buffer
+	defw	console_status	; 11 - get console status
+	defw	return_version	; 12 - get version
+	defw	reset_dma	; 13 - reset disk system
+	defw	ret_0		; 14 - select disk
+	defw	openfile 	; 15 - open file
+	defw	closefile 	; 16 - close file
+	defw	no_good		; 17 - search for first file
+	defw	no_good		; 18 - search for next file
+	defw	delete		; 19 - delete file
+	defw	readfile	; 20 - read next record
+	defw	writefile	; 21 - write next record
+	defw	makefile	; 22 - create file
+	defw	rename		; 23 - rename file
+	defw	ret_1		; 24 - get login vector
+	defw	ret_0		; 25 - get current disk
+	defw	set_dma		; 26 - set disk DMA address
+	defw	no_good		; 27 - get allocation vector
+	defw	no_good		; 28 - write protect disk
+	defw	no_good		; 29 - get read-only vector
+	defw	no_good		; 30 - set file attributes
+	defw	no_good		; 31 - get addr(dpb params)
+	defw	ret_0		; 32 - set/get user code
+	defw	readrandom	; 33 - read random
+	defw	writerandom	; 34 - write random
+	defw	no_good		; 35 - compute file size
+	defw	setrandom	; 36 - set random record
+	defw	reset_dma 	; 37 - reset drive
+	defw	writerandom	; 38 - write random with zero fill
+; end of BDOS dispatch table
+
+maxbdosfn equ	(($-bdostable)/2)-1 ; should be 38 (026h)
+
+	page
+;
+; First try of a direct bios call implementation
+;
+	cseg
+
+tobios	equ	(cpmbios-cpmtpa)-($-tpa)
+  if tobios and 8000h	; negative (sign bit on)
+    if2
+	.printx /ERROR: BDOS area overflowed into BIOS area/
+    endif
+  else
+	defs	tobios
+  endif
+
+;*******************************************************************
+; The BIOS jump table.
+; Routines are located above to minimise
+; what would otherwise be wasted memory space.
+
+bios::	jp	done		;0 Cold Boot
+	jp	done		;1 Warm Boot
+	jp	_conist		;2 Console Input Status
+	jp	_conin		;3 Console Input
+	jp	_conout		;4 Console Output
+	jp	dummy		;5 List Output
+	jp	dummy		;6 Punch Output
+	jp	dummy		;7 Reader Input
+	jp	dummy		;8 Home
+	jp	dummy		;9 Select Disk
+	jp	dummy		;10 Set Track
+	jp	dummy		;11 Set Sector
+	jp	dummy		;12 Set DMA Transfer Address
+	jp	dummy		;13 Read Sector
+	jp	dummy		;14 Write Sector
+	jp	dummy		;15 List Output Status
+	jp	dummy		;16 Sector Translate
+
+;*******************************************************************
+;
 ; BIOS console input
 _conin:
 	call	readchar
@@ -2508,6 +2681,7 @@ do_2:	inc	hl
   endif ; RSX280
 
 ;*******************************************************************
+;
   if UZI280
 
 	dseg			; only UZI is using DSEG for now
@@ -2547,6 +2721,8 @@ call:	defs	2
 dmaadr:	defs	2
 char:	defs	2
 errno:	defs	2
+
+;*******************************************************************
 
   if RSX280
 
@@ -2599,7 +2775,7 @@ ttibsz	equ	126
 ttiptr:	defw	ttibuf		; pointer to buffer
 ttibuf:	defb	ttibsz		; first byte has size
 	defb	0		; number of characters in buffer
-	defs	ttibsz		; the line buffer
+	defs	ttibsz+2	; the line buffer
 
 ; Console output line
 glbpsv:	defs	2
@@ -2616,143 +2792,6 @@ starting:
 	defb	2		; starting position for cursor
 curpos:	defb	0		; cursor position (0=start of line)
 
-
-  endif ;RSX280
-
-; Stack
-  if RSX280
-
-	cseg
-
-    if (($-tpa) and 1)	; Even address boundary
-	defs	1
-    endif
-
-	defs	256
-  endif
-  if UZI280
-
-	dseg
-
-	defs	30
-  endif
-
-tmpstk:
-
-;*******************************************************************
-; CP/M File Control Block offsets
-
-;struct	fcb {
-;/*0*/	char	drive;		/* drive code */
-;/*1*/	char	name[8];	/* file name */
-;/*9*/	char	ext[3];		/* file type */
-;/*12*/	char	ex;		/* file extent */
-;/*13*/	int	magic;		/* UZI280/RSX280 open file magic number */
-;/*15*/	char	rec;		/* number of records in present extent */
-;/*16*/	char	desc;		/* UZI280 file number/RSX280 LUN */
-;/*17*/	char	dm[15];		/* CP/M disk map */
-;/*32*/	char	nr;		/* next record to read or write */
-;/*33*/	unsigned ranrec;	/* random record number (24 bit no. ) */
-;/*35*/	char	hr_rec;		/*   "       "   high byte */
-;};
-fcbname	equ	1
-fcbext	equ	9
-fcbmagic equ	13
-fcbdesc	equ	16
-fcbrec	equ	20		; internal record counter read/write.
-fcbran	equ	33
-
-; magic number of open file
-; (emulator writes this to S1 and S2 bytes in a CP/M FCB when a file is open)
-MAGIC		equ	12345
-
-; BDOS function dispatch table (keep this in cseg)
-	cseg
-
-bdostable:
-	defw	done		; 0 - system reset
-	defw	read_console	; 1 - console read
-	defw	write_console	; 2 - console write
-	defw	no_good		; 3 - reader input
-	defw	no_good		; 4 - punch output
-	defw	no_good		; 5 - list output
-	defw	direct_console	; 6 - direct console I/O
-	defw	no_good		; 7 - get IO byte
-	defw	no_good		; 8 - set IO byte
-	defw	print_string	; 9 - print string
-	defw	rdbuf		; 10 - read console buffer
-	defw	console_status	; 11 - get console status
-	defw	return_version	; 12 - get version
-	defw	reset_dma	; 13 - reset disk system
-	defw	ret_0		; 14 - select disk
-	defw	openfile 	; 15 - open file
-	defw	closefile 	; 16 - close file
-	defw	no_good		; 17 - search for first file
-	defw	no_good		; 18 - search for next file
-	defw	delete		; 19 - delete file
-	defw	readfile	; 20 - read next record
-	defw	writefile	; 21 - write next record
-	defw	makefile	; 22 - create file
-	defw	rename		; 23 - rename file
-	defw	ret_1		; 24 - get login vector
-	defw	ret_0		; 25 - get current disk
-	defw	set_dma		; 26 - set disk DMA address
-	defw	no_good		; 27 - get allocation vector
-	defw	no_good		; 28 - write protect disk
-	defw	no_good		; 29 - get read-only vector
-	defw	no_good		; 30 - set file attributes
-	defw	no_good		; 31 - get addr(dpb params)
-	defw	ret_0		; 32 - set/get user code
-	defw	readrandom	; 33 - read random
-	defw	writerandom	; 34 - write random
-	defw	no_good		; 35 - compute file size
-	defw	setrandom	; 36 - set random record
-	defw	reset_dma 	; 37 - reset drive
-	defw	writerandom	; 38 - write random with zero fill
-; end of BDOS dispatch table
-
-maxbdosfn equ	(($-bdostable)/2)-1 ; should be 38 (026h)
-
-	page
-;
-; First try of a direct bios call implementation
-;
-	cseg
-
-tobios	equ	(cpmbios-cpmtpa)-($-tpa)
-  if tobios and 8000h	; negative (sign bit on)
-    if2
-	.printx /ERROR: BDOS area overflowed into BIOS area/
-    endif
-  else
-	defs	tobios
-  endif
-
-;*******************************************************************
-; The BIOS jump table.
-; Routines are located above to minimise
-; what would otherwise be wasted memory space.
-
-bios::	jp	done		;0 Cold Boot
-	jp	done		;1 Warm Boot
-	jp	_conist		;2 Console Input Status
-	jp	_conin		;3 Console Input
-	jp	_conout		;4 Console Output
-	jp	dummy		;5 List Output
-	jp	dummy		;6 Punch Output
-	jp	dummy		;7 Reader Input
-	jp	dummy		;8 Home
-	jp	dummy		;9 Select Disk
-	jp	dummy		;10 Set Track
-	jp	dummy		;11 Set Sector
-	jp	dummy		;12 Set DMA Transfer Address
-	jp	dummy		;13 Read Sector
-	jp	dummy		;14 Write Sector
-	jp	dummy		;15 List Output Status
-	jp	dummy		;16 Sector Translate
-
-  if RSX280
-
 ; We use FCS to access files.  These are the File Storage Regions for
 ; each of the LUNs that are used (only 4 at present)
 
@@ -2768,7 +2807,6 @@ FDB1::	defs	FINFSZ
 FDB2::	defs	FINFSZ
 FDB3::	defs	FINFSZ
 FDB4::	defs	FINFSZ
-
 
   endif ;RSX280
 

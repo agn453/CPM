@@ -21,23 +21,31 @@ start:	ld	c,9	; print string
 	ld	c,9
 	ld	de,msg2
 	call	5
-getc:	ld	e,0FFh
+
+	call	delay	; Give them a chance to type something
+
+getc:	ld	e,0FFh	; direct console I/O test
 	ld	c,6
 	call	5
+
 	or	a	; anything typed?
 	jr	nz,gotc	; yes
-	ld	e,'.'
-	ld	c,6	; no - output a '.'
+
+	ld	c,9
+	ld	de,msg4
 	call	5
-	call	delay
-	jr	getc
+	jr	done
+
 gotc:	push	af
 	ld	c,9
 	ld	de,msg3
 	call	5
 	pop	af
 	call	ahex
-	jp	0
+
+done:	ld	c,9	; new line and exit
+	ld	de,msg5
+	jp	5
 
 ; Print value in A to console in hexadecimal
 
@@ -57,7 +65,16 @@ chex:	and	0Fh
 	ld	c,2		; Console output
 	jp	5
 
-delay:	ld	hl,0
+delay:	push	bc
+	push	hl
+	ld	b,64
+dlyn:	call	dly0
+	djnz	dlyn
+	pop	hl
+	pop	bc
+	ret
+
+dly0:	ld	hl,0
 dly1:	dec	hl
 	ld	a,h
 	or	l
@@ -70,9 +87,15 @@ msg0:	defb	13,10,'Hello from CP/M'
 msg1:	defb	13,10,10,'You typed a character with this value (in hex) $'
 
 msg2:	defb	13,10,10,'Now checking direct console I/O'
-	defb	13,10,10,'Type some keys : $'
+	defb	13,10,10,"I'm going to delay a bit. You may type some keys"
+	defb	13,10,'or not. I will let you know if I see anything...'
+	defb	13,10,'$'
 
-msg3:	defb	13,10,10,'This time you typed $'
+msg3:	defb	13,10,'This time you typed $'
+
+msg4:	defb	13,10,'You typed nothing$'
+
+msg5:	defb	13,10,'$'
 
 	end	start
 
