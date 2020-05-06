@@ -4,22 +4,39 @@
 ;
 	.z80
 
-start:	ld	c,9	; print string
+start:	ld	hl,0
+	add	hl,sp	; get stack pointer
+	push	hl
+	ld	c,9
+	ld	de,stkmsg
+	call	5
+	pop	hl
+	call	hlhex
+	call	crlf
+
+	call	dump_pg0
+
+	ld	c,9	; print string
 	ld	de,msg0
 	call	5
 	ld	c,1	; read a character
 	call	5
         push	af	; save it
-	ld	e,a
-	ld	c,2	; echo it back
-	call	5
 	ld	c,9
 	ld	de,msg1
 	call	5
 	pop	af
-	call	ahex	; print char in hex
+	push	af
+	ld	e,a
+	ld	c,2	; echo it back
+	call	5
 	ld	c,9
 	ld	de,msg2
+	call	5
+	pop	af
+	call	ahex	; print char in hex
+	ld	c,9
+	ld	de,msg3
 	call	5
 
 	call	delay	; Give them a chance to type something
@@ -32,23 +49,108 @@ getc:	ld	e,0FFh	; direct console I/O test
 	jr	nz,gotc	; yes
 
 	ld	c,9
-	ld	de,msg4
+	ld	de,msg5
 	call	5
 	jr	done
 
 gotc:	push	af
 	ld	c,9
-	ld	de,msg3
+	ld	de,msg4
 	call	5
 	pop	af
 	call	ahex
 
-done:	ld	c,9	; new line and exit
-	ld	de,msg5
-	jp	5
+done:	; new line and exit
+
+crlf:	push	hl
+	push	de
+	push	bc
+	ld	c,9
+	ld	de,crlf_msg
+	call	5
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Dump out page 0 of memory
+dump_pg0:
+	ld	hl,0
+d_addr:	call	hlhex
+	call	colonsp
+	push	hl
+d_byte:	ld	a,(hl)
+	call	ahex
+	call	space
+	inc	hl
+	ld	a,l
+	and	0Fh
+	jr	nz,d_byte
+	call	space
+	pop	hl
+d_char:	ld	a,(hl)
+	call	putc
+	inc	hl
+	ld	a,l
+	and	0Fh
+	jr	nz,d_char
+	call	crlf
+	ld	a,h
+	or	a
+	ret	nz
+	jr	d_addr
+
+; Print char
+putc:	push	hl
+	push	de
+	push	bc
+	and	7Fh
+	cp	7Fh
+	jr	z,dot
+	cp	' '
+	jr	c,dot
+	ld	e,a
+	jr	co
+dot:	ld	e,'.'
+co:	ld	c,2
+	call	5
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Print a space
+space:	push	hl
+	push	de
+	push	bc
+	ld	e,' '
+	ld	c,2
+	call	5
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Print a colon followed by a space
+colonsp:
+	push	hl
+	push	de
+	push	bc
+	ld	c,9
+	ld	de,cspmsg
+	call	5
+	pop	bc
+	pop	de
+	pop	hl
+	ret
+
+; Print value in HL to console in hexadecimal
+hlhex:	ld	a,h
+	call	ahex
+	ld	a,l
+	; fall into ahex routine
 
 ; Print value in A to console in hexadecimal
-
 ahex:	push	af
 	rrca
 	rrca
@@ -61,9 +163,16 @@ chex:	and	0Fh
 	daa
 	adc	a,40h
 	daa
+	push	hl
+	push	de
+	push	bc
 	ld	e,a
 	ld	c,2		; Console output
-	jp	5
+	call	5
+	pop	bc
+	pop	de
+	pop	hl
+	ret
 
 delay:	push	bc
 	push	hl
@@ -81,21 +190,24 @@ dly1:	dec	hl
 	jr	nz,dly1
 	ret
 
-msg0:	defb	13,10,'Hello from CP/M'
-	defb	13,10,10,'Press a key : $'
+stkmsg:	defb	13,10,'TESTCPM entered with SP=$'
 
-msg1:	defb	13,10,10,'You typed a character with this value (in hex) $'
+msg0:	defb	'Hello from CP/M.  Press a key : $'
 
-msg2:	defb	13,10,10,'Now checking direct console I/O'
-	defb	13,10,10,"I'm going to delay a bit. You may type some keys"
-	defb	13,10,'or not. I will let you know if I see anything...'
+msg1:	defb	13,10,'You typed a "$'
+
+msg2:	defb	'" character with this value (in hex) $'
+
+msg3:	defb	13,10,"Now checking direct console I/O. I'm going to delay a bit. You may type"
+	defb	13,10,'some keys or not. I will let you know if I see anything...$'
+
+msg4:	defb	13,10,'This time you typed $'
+
+msg5:	defb	13,10,'You typed nothing$'
+
+crlf_msg:
 	defb	13,10,'$'
 
-msg3:	defb	13,10,'This time you typed $'
-
-msg4:	defb	13,10,'You typed nothing$'
-
-msg5:	defb	13,10,'$'
+cspmsg:	defb	': $'
 
 	end	start
-
