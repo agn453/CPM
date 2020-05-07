@@ -29,3 +29,68 @@ These have been added.  Console I/O and Disk file Open/Create/Read/Write
 appear to be working.   Still to-do file Remove, Random access Read/Write,
 Directory Search and some other BDOS functions.
 
+Update: 07-May-2020
+-------------------
+
+BDOS Console I/O and sequential File functions are working.
+
+Still to-do Search First/Next functions and verify Random File
+functions.
+
+A log file follows -
+
+```
+>run cpm
+CP/M 2.2 emulator 59K V0.99 [DEBUG]
+Use ^Z followed by Return/Enter to exit.
+
+X>[CPM]CAL 2020 /D
+Calendar,  Version 1.3
+Name of Disk Output File? cal.tmp
+Calendar Output File/Device is cal.tmp
+
+X>[CPM]PIP CON:=CAL.TMP
+                       Calendar of Year 2020
+
+
+Calendar for JANUARY   Calendar for FEBRUARY  Calendar for MARCH
+Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
+          1  2  3  4                      1    1  2  3  4  5  6  7
+ 5  6  7  8  9 10 11    2  3  4  5  6  7  8    8  9 10 11 12 13 14
+12 13 14 15 16 17 18    9 10 11 12 13 14 15   15 16 17 18 19 20 21
+19 20 21 22 23 24 25   16 17 18 19 20 21 22   22 23 24 25 26 27 28
+26 27 28 29 30 31      23 24 25 26 27 28 29   29 30 31
+
+
+
+Calendar for APRIL     Calendar for MAY       Calendar for JUNE
+Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
+          1  2  3  4                   1  2       1  2  3  4  5  6
+ 5  6  7  8  9 10 11    3  4  5  6  7  8  9    7  8  9 10 11 12 13
+12 13 14 15 16 17 18   10 11 12 13 14 15 16   14 15 16 17 18 19 20
+19 20 21 22 23 24 25   17 18 19 20 21 22 23   21 22 23 24 25 26 27
+26 27 28 29 30         24 25 26 27 28 29 30   28 29 30
+                       31
+
+
+Calendar for JULY      Calendar for AUGUST    Calendar for SEPTEMBER
+Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
+          1  2  3  4                      1          1  2  3  4  5
+ 5  6  7  8  9 10 11    2  3  4  5  6  7  8    6  7  8  9 10 11 12
+12 13 14 15 16 17 18    9 10 11 12 13 14 15   13 14 15 16 17 18 19
+19 20 21 22 23 24 25   16 17 18 19 20 21 22   20 21 22 23 24 25 26
+26 27 28 29 30 31      23 24 25 26 27 28 29   27 28 29 30
+                       30 31
+
+Calendar for OCTOBER   Calendar for NOVEMBER  Calendar for DECEMBER
+Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
+             1  2  3    1  2  3  4  5  6  7          1  2  3  4  5
+ 4  5  6  7  8  9 10    8  9 10 11 12 13 14    6  7  8  9 10 11 12
+11 12 13 14 15 16 17   15 16 17 18 19 20 21   13 14 15 16 17 18 19
+18 19 20 21 22 23 24   22 23 24 25 26 27 28   20 21 22 23 24 25 26
+25 26 27 28 29 30 31   29 30                  27 28 29 30 31
+
+
+X>^Z
+>
+```

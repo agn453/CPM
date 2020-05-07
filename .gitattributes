@@ -1,6 +1,7 @@
 # Default is to keep crlf line endings
 text=auto
 
+README.md eol=crlf
 Makefile eol=crlf
 *.cmd eof=crlf
 *.mac eol=crlf

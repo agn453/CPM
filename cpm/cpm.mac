@@ -115,28 +115,26 @@ cpmbios	equ	04a00h+cpmoffs	; BIOS only emulates character I/O
 ;/*1*/	char	name[8];	/* file name */
 ;/*9*/	char	ext[3];		/* file type */
 ;/*12*/	char	ex;		/* file extent */
-;/*13*/ char	s1;		/* system use s1 */
-;/*14*/	char	s2;		/* system use s2 */
+;/*13*/ char	s1;		/* system use s1 (LUN)*/
+;/*14*/	char	s2;		/* system use s2 (MAGIC)*/
 ;/*15*/	char	rc;		/* number of records in present extent */
 ;/*16*/	char	dm[16];		/* Reserved for system use (disk map) */
-;/*26*/ int	rec;		/* UZI280/RSX280 internal record count */
-;/*28*/	int	desc;		/* UZI280 file number/RSX280 LUN */
-;/*30*/	int	magic;		/* UZI280/RSX280 open file magic number */
+;/*30*/ int	rec;		/* UZI280/RSX280 internal record count */
 ;/*32*/	char	cr;		/* current record to read or write */
 ;/*33*/	unsigned ranrec;	/* random record number (24 bit no. ) */
 ;/*35*/	char	hr_rec;		/*   "       "   high byte */
 ;}
 fcbname	equ	1		; file name
 fcbext	equ	9		; file extension
-fcbrec	equ	26		; internal record counter read/write
-fcbdesc	equ	28		; file descriptor (UZI280) or LUN (RSX280)
-fcbmagic equ	30		; set to magic number if file open
+fcbrec	equ	30		; internal record counter read/write word
+fcbdesc	equ	13		; file LUN (RSX280)
+fcbmagic equ	14		; set to magic number if file open
 fcbcr	equ	32
 fcbran	equ	33		; random access record number
 
 ; magic number of open file
-; (emulator writes this to dm[15,16] bytes in a CP/M FCB when a file is open)
-MAGIC		equ	12345
+; (emulator writes this to s2 byte in a CP/M FCB when a file is open)
+MAGIC		equ	05Eh
 
   if UZI280
 
@@ -639,8 +637,11 @@ readen:
 	pop	hl		; End the line and save the
 	ld	(hl),b		;  number of characters entered
 
+	push	hl
 	ld	c,CR
-	jr	conout
+	call	conout
+	pop	hl
+	ret
 
 ; New line on console
 crlf:
@@ -893,10 +894,12 @@ openfile:
   endif ;RSX280
 
 	; test for reopen
-	ldw	hl,(iy+fcbmagic)
+	ld	h,0
+	ld	l,(iy+fcbmagic)
 	cpw	hl,MAGIC
 	jr	nz,open2
-	ldw	hl,(iy+fcbdesc)
+	ld	h,0
+	ld	l,(iy+fcbdesc)
 	push	hl
 	call	_close		; was open
 	pop	de
@@ -932,13 +935,12 @@ open2:
   endif ;UZI280
 
 open_ok:
-	ldw	(iy+fcbdesc),hl	; save the file number/LUB
+	ld	(iy+fcbdesc),l	; save the file number/LUB
 	ld	hl,MAGIC
-	ldw	(iy+fcbmagic),hl ; make it magic (opened)
+	ld	(iy+fcbmagic),l ; make it magic (opened)
 	ld	hl,0		; return no error
 	ldw	(iy+fcbrec),hl	; zero internal record count
 	ld	(iy+fcbcr),l	;  and current record byte
-	ld	a,l		; Success (A=0)
 	ret
 no_good:
 	ld	hl,255		; return error
@@ -984,18 +986,17 @@ makefile:
 ;    blk->magic= MAGIC;
 ;    blk->desc = desc;
 ;    blk->rec  = 0;
-	ldw	(iy+fcbdesc),hl
+	ld	(iy+fcbdesc),l
 	ld	hl,MAGIC
-	ldw	(iy+fcbmagic),hl
+	ld	(iy+fcbmagic),l
 	ld	hl,0
 	ldw	(iy+fcbrec),hl
 	ld	(iy+fcbcr),l
-	ld	a,l
   if RSX280
     if 0 ;DEBUG
-	push	af
+	push	hl
 	call	dumpfcb
-	pop	af
+	pop	hl
     endif ;DEBUG
   endif ;RSX280
 	ret
@@ -1006,14 +1007,15 @@ makefile:
 ; On entry: IY -> pointer to FCB
 ;
 closefile:
-	ldw	hl,(iy+fcbdesc)
+	ld	h,0
+	ld	l,(iy+fcbdesc)
 	push	hl
 	call	_close
 	pop	de
 	cpw	hl,-1
 	jp	z,no_good
 	ld	hl,0
-	ldw	(iy+fcbmagic),hl
+	ld	(iy+fcbmagic),l
 	ret
 
 ;*******************************************************************
@@ -1209,25 +1211,47 @@ rn_err:
 readfile:
 	call	read128
 ;    nread = read(blk->desc, dmaadr, 128);
-	ld	a,h		; nothing read?
-	or	l
-	jp	z,no_good
-	cpw	hl,-1
-	jp	z,no_good	; error
-	incw	(iy+fcbrec)
+	cpw	hl,-1		; verify no error status
+	jp	z,r_eof
+
+	incw	(iy+fcbrec)	; bump record number
+	ld	h,b		; byte count to HL
+	ld	l,c
 ;    if (nread < 128)
 ;	dmaadr[nread] = 0x1a;
-	ld	a,l
+	ld	a,l		; all 128 bytes read?
+	or	a
+	jr	z,r_iseof	; none read - is EOF
 	cp	128
-	jr	nc,r_ok
-	ex	de,hl
+	jr	nc,r_ok		; yes
+
+	ex	de,hl		; no, only partial record
 	ld	hl,(dmaadr)
 	add	hl,de
-	ld	a,CTRLZ
+	ld	a,CTRLZ		; add an end-of-file marker
 	ld	(hl),a
 r_ok:
-	ld	hl,0
+	ld	hl,0		; no errors
 	ret
+
+r_eof:
+  if RSX280
+    if 0 ;DEBUG
+	call	$PRINT
+	defb	CR,LF,'%EOF-I-Reading LUN='
+	ld	h,0
+	ld	l,(iy+fcbdesc)
+	call	$HLHEX
+    endif ;DEBUG
+	ld	hl,(errno)
+	cpw	hl,E.EOF	; Is it end-of-file?
+	jp	nz,no_good
+r_iseof:
+	ld	hl,1		; Yes
+	ret
+  else
+	jp	no_good
+  endif ;RSX280
 
 ;*******************************************************************
 ; BDOS function write file seq.
@@ -1268,6 +1292,8 @@ readrandom:
     	call	rseek
 	cpw	hl,-1
 	jp	z,no_good
+	ld	h,b		; bytes read to HL
+	ld	l,c
 	ld	a,l
 	cp	128		; nread < 128
 	jr	nc,rr_1
@@ -1291,7 +1317,8 @@ writerandom:
 ; record seek (128 byte) for read/write random
 rseek:
 	push	hl		; save HL
-	ldw	hl,(iy+fcbdesc)
+	ld	h,0
+	ld	l,(iy+fcbdesc)
 	push	hl
 	ldw	hl,(iy+fcbran)
 	ldw	(iy+fcbrec),hl
@@ -1309,7 +1336,8 @@ rseek:
 	pop	de
 	pop	de
 
-	ldw	hl,(iy+fcbdesc)
+	ld	h,0
+	ld	l,(iy+fcbdesc)
 	push	hl
 	ldw	hl,(iy+fcbran)
 	srl	h
@@ -1342,7 +1370,8 @@ rseek:	push	hl		; save HL
 	push	de
 	push	bc
 
-	ldw	hl,(iy+fcbdesc)	; fetch the LUN
+	ld	h,0
+	ld	l,(iy+fcbdesc)	; fetch the LUN
 	; point IX to the RSX280 file storage region
 	call	checklun
 	jr	nc,sk_err	; invalid LUN
@@ -1585,8 +1614,13 @@ wc_ret:	pop	hl
 	ret
 
 ; read 128 bytes
+;
+; Under RSX280 - returns bytes read in BC and status in HL
+; (0=no errors, -1=error with reason in errno variable)
+; Also Carry flag is set on error.
 read128:
-	ldw	hl,(iy+fcbdesc)
+	ld	h,0
+	ld	l,(iy+fcbdesc)	; LUN in HL
 	push	hl
 	push	(dmaadr)
 	push	128
@@ -1599,7 +1633,8 @@ read128:
 
 ; write 128 bytes
 write128:
-	ldw	hl,(iy+fcbdesc)
+	ld	h,0
+	ld	l,(iy+fcbdesc)
 	push	hl
 	push	(dmaadr)
 	push	128
@@ -1668,7 +1703,6 @@ reentry:
 	ld	(arg),hl	; we're calling the BDOS routine
 	call	rdbuf
 
-	ld	hl,ttibuf+1
 	ld	a,(hl)		; how many characters entered?
 	or	a
 	jr	z,reentry	; none
@@ -1679,7 +1713,7 @@ reentry:
 	jp	z,$EXIT		; Yes, exit
 
 	call	getnb		; skip white-space
-	jr	z,reentry	; there was nothing
+	jr	z,reentry	; Z means there was nothing
 	cp	CR		; EOL?
 	jr	z,reentry
 
@@ -2435,7 +2469,7 @@ DISP:	ret	nc		; no error
 ; Returns the LUN of the open file in HL (or -1 on error)
 ;
 _open:
-    if 0 ;DEBUG
+    if 0;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%OPEN-I-File "',0
 	ldw	hl,(sp+4)
@@ -2570,7 +2604,7 @@ op_err:	ld	l,a		; save RSX280 error in errno
 ; Close the opened file with the LUN given by index
 ;
 _close:
-    if 0 ;DEBUG
+    if 0;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%CLOSE-I-LUN=',0
 	ldw	hl,(sp+2)
@@ -2712,7 +2746,7 @@ ul_err:	ld	h,0
 ; read(int d, char *buf,unsigned nbytes)
 _read:
 
-    if 0 ;DEBUG
+    if 0;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%READ-I-LUN=',0
 	ldw	hl,(sp+6)
@@ -2731,7 +2765,7 @@ _read:
 	ldw	ix,(sp+4)	; point to buffer
 	ldw	hl,(sp+6)	; d
 
-rd_0:	; read from a file - buf ptr is in IX
+rd_0:	; read from a file - buffer ptr is in IX
         ld	b,h		; LUN -> BC
 	ld	c,l
 	ld	de,FCSIZ+512	; Select FSR for this LUN
@@ -2754,8 +2788,7 @@ rd_3:	push	ix		; juggle registers
         ; all set, now do the read
 	call	FREAD
 	; number of bytes read is returned in BC, CY set on error
-	ld	h,b
-	ld	l,c
+	ld	hl,0		; no error status
 	ret	nc		; done
 	ld	h,0
 	ld	l,a
@@ -2767,7 +2800,7 @@ rd_3:	push	ix		; juggle registers
 ; write(int d, char *buf,unsigned nbytes)
 _write:
 
-    if 0 ;DEBUG
+    if 0;DEBUG
 	call	$PRINT
 	defb	CR,LF,'%WRITE-I-LUN=',0
 	ldw	hl,(sp+6)
