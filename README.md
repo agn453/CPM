@@ -94,3 +94,28 @@ Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa   Su Mo Tu We Th Fr Sa
 X>^Z
 >
 ```
+
+Update: 18-May-2020
+-------------------
+
+I've been through a few iterations trying to implement the BDOS search_first
+and search_next functions (17 and 18).  At first I tried using RSX280
+native directory searching like the PIP program uses - but this ended
+up being too complex and large (and it doesn't scale if you have a
+large number of files in your home directory).
+
+As a consequence, I've approached this from the CP/M BDOS source
+and made some assumptions.  Firstly, all files visible from CP/M
+*MUST* be only eight-character filenames (not nine), and only
+files with version number 1 (e.g. FILE.DAT;1) are seen by CP/M
+(as FILE.DAT).
+
+I'm using the RSX280 FCS routines to walk through the user's
+directory and computing file sizes (in CP/M records of 128-bytes)
+by looking up the SY:[MASTER]INDEXF.SYS;1 index file.  I'm able to
+do a Search First and Search Next to retrieve the correct results
+the first time through, however, trying a second time fails.  I'm
+suspicious of problems with the system's FSEEK routine and will
+just post a "where I'm at" snapshot and look at it further soon.
+Debugging messages are everywhere at present.
+

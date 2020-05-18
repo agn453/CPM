@@ -1,6 +1,5 @@
-	title	CPM emulator
-	ident	"V0.99"	; Pre-release version
-
+	title	CP/M 2.2 Emulator for RSX280
+	ident	"V0.99"		; pre-release version
 ;*******************************************************************
 ;
 ;	CPM - CP/M 2.2 BDOS/BIOS emulation for RSX280.
@@ -23,20 +22,20 @@
 ;
 ;*******************************************************************
 ;
-; Acknowledgements
+;  Acknowledgements
 ;
-; Loosely based on CPMEMU - a CP/M emulator for the UZI-280
-; operating system by Stefan Nitschke and released into the
-; Public Domain on 13-Mar-1996.
+;  Loosely based on CPMEMU - a CP/M emulator for the UZI-280
+;  operating system by Stefan Nitschke and released into the
+;  Public Domain on 13-Mar-1996.
 ;
-; Also, portions of the original CP/M 2.2 BDOS and CCP
-; source code by Digital Research Inc. have been adapted to
-; preserve the functions of various routines in this
-; emulation.  CP/M is Copyright (C) Caldera Corporation and
-; later by Lineo Inc.; and is available from the "Unofficial
-; CP/M Web Site" for hobbyists, developers and the community
-; at http://www.cpm.z80.de
-; 
+;  Also, portions of the original CP/M 2.2 BDOS and CCP
+;  source code by Digital Research Inc. have been adapted to
+;  preserve the functions of various routines in this
+;  emulation.  CP/M is Copyright (C) Caldera Corporation and
+;  later by Lineo Inc.; and is available from the "Unofficial
+;  CP/M Web Site" for hobbyists, developers and the community
+;  at http://www.cpm.z80.de
+;
 ;*******************************************************************
 
 	.Z280
@@ -44,46 +43,38 @@
 FALSE	equ	0
 TRUE	equ	not FALSE
 
-RSX280	equ	TRUE
-
-UZI280	equ	not RSX280	; original code preserved
-
 DEBUG	equ	TRUE		; output debugging messages
 
 ;
 ; Include files and externals
 
-  if RSX280
-
-	; Uses FCS routines for RSX280 file access
+	; uses FCS routines for RSX280 file access
 	extrn	FCREAT,FOPEN,FCLOSE
 	extrn	FREAD,FWRITE,FSEEK
 	extrn	PFN,FREN,FDEL
 
 	; RSX280 definitions (list off)
 	list	off
-    ifdef ZXCC
+  ifdef ZXCC
 	; cross-compile with include files in current directory
 	include SYSFN.INC
+	include	QIO.INC
 	include FCB.INC
 	include	DCB.INC
 	include	TCB.INC
-	include	QIO.INC
 	include	FCSLIB.INC
 	include	ERRORS.INC
-    else
+  else
 	; native RSX280 has include files in LB:[SYSTEM]
 	include $SYSFN.INC
+	include	$QIO.INC
 	include $FCB.INC
 	include	$DCB.INC
 	include	$TCB.INC
-	include	$QIO.INC
 	include	$FCSLIB.INC
 	include	$ERRORS.INC
-    endif ;ZXCC
+  endif ;ZXCC
 	list	on
-
-  endif ;RSX280
 
 ; Control Characters
 ETX	equ	03h
@@ -96,15 +87,21 @@ CTRLZ	equ	1Ah
 RUBOUT	equ	7Fh
 
 ; CP/M memory sizing
-memsize	equ	59		; 59KB memory size
+; (consult the TKB map file before changing this)
+;
+memsize	equ	58		; 58KB memory size
 topmem	equ	memsize*1024
 cpmoffs	equ	topmem-20*1024	; based on standard CP/M 2.2
 
 ; Where CP/M expects things to be
+cpmwarm	equ	00000h		; warm boot jump
+cpmiob	equ	00003h		; I/O byte
+cpmddr	equ	00004h		; default drive
+cpmentry equ	00005h		; BDOS jump vector
 cpmfcb1	equ	0005ch		; FCB 1
 cpmfcb2	equ	0006ch		; FCB 2
-cpmdma	equ	00080h		; Default DMA address and command line
-cpmtpa	equ	00100h		; Transient programs are loaded here
+cpmdma	equ	00080h		; default DMA address and command line
+cpmtpa	equ	00100h		; transient programs are loaded here
 cpmccp	equ	03400h+cpmoffs	; CCP is implemented by this program
 cpmbdos	equ	03c00h+cpmoffs	; BDOS contains emulation code
 cpmbios	equ	04a00h+cpmoffs	; BIOS only emulates character I/O
@@ -115,74 +112,88 @@ cpmbios	equ	04a00h+cpmoffs	; BIOS only emulates character I/O
 ;/*1*/	char	name[8];	/* file name */
 ;/*9*/	char	ext[3];		/* file type */
 ;/*12*/	char	ex;		/* file extent */
-;/*13*/ char	s1;		/* system use s1 (LUN)*/
-;/*14*/	char	s2;		/* system use s2 (MAGIC)*/
+;/*13*/ char	s1;		/* system use s1 */
+;/*14*/	char	s2;		/* system use s2 */
 ;/*15*/	char	rc;		/* number of records in present extent */
 ;/*16*/	char	dm[16];		/* Reserved for system use (disk map) */
-;/*30*/ int	rec;		/* UZI280/RSX280 internal record count */
+;/*28*/	byte	lun;		/* RSX280 LUN for file when open */
+;/*29*/	byte	magic;		/* RSX280 MAGIC byte to indicate file opened */
+;/*30*/ int	rec;		/* RSX280 internal 16-bit record count */
 ;/*32*/	char	cr;		/* current record to read or write */
 ;/*33*/	unsigned ranrec;	/* random record number (24 bit no. ) */
 ;/*35*/	char	hr_rec;		/*   "       "   high byte */
 ;}
+fcbdrive equ	0		; drive code
 fcbname	equ	1		; file name
-fcbext	equ	9		; file extension
-fcbrec	equ	30		; internal record counter read/write word
-fcbdesc	equ	13		; file LUN (RSX280)
-fcbmagic equ	14		; set to magic number if file open
-fcbcr	equ	32
+fcbext	equ	9		; file type (extension)
+fcbex	equ	12		; file extent
+fcbs1	equ	13		; s1
+fcbubytes equ	fcbs1		; s1 used for unfilled bytes field
+fcbs2	equ	14		; s2
+fcbmodnum equ	fcbs2		; s2 used for module number
+fcbrc	equ	15		; record count
+fcbdm0	equ	16		; disk allocation map
+fcbcr	equ	32		; current CP/M record
 fcbran	equ	33		; random access record number
+fcbranh	equ	35		; random access record high byte (24-bit)
+
+fcbnamlen equ	15		; name length for search matching
+fcblen	equ	36		; length of CP/M FCB
+
+fcblun	equ	28		; file LUN
+fcbmagic equ	29		; set to magic number if file open
+fcbrec	equ	30		; RSX280 record counter read/write word
+
+empty	equ	0E5h		; deleted or empty directory entry
+recsiz	equ	128		; record size (CP/M sector size)
+  if DEBUG
+maxdir	equ	64	;**temporary while debugging search
+  else
+maxdir	equ	1024		; number of directory entries
+  endif ;DEBUG
+dirlen	equ	32		; directory entry length (CP/M)
+dirspr	equ	recsiz/dirlen	; directory entries per sector
+dskmsk	equ	dirspr-1	; mask for directory entry
+maxext	equ	31		; maximum extent value
+dircnt	equ	maxdir/dirspr	; number of directory sectors
 
 ; magic number of open file
-; (emulator writes this to s2 byte in a CP/M FCB when a file is open)
-MAGIC		equ	05Eh
-
-  if UZI280
-
-; Console input/output/error file descriptors
-stdin	equ	0
-stdout	equ	1
-stderr	equ	2
-
-; UZI280 ioctl function number get available chars
-TIOCSETN	equ	2
-
-flag_r	equ	0	; R mode for file open()
-flag_w	equ	1	; W mode for file open()
-flag_rw	equ	2	; R/W mode for file open()
-
-  endif ;UZI280
-
-  if RSX280
+;
+; The emulator writes this to s2 byte in a CP/M FCB when a file is open
+; (along withe the LUN of the open file in the s1 byte).
+MAGIC	equ	05Eh
 
 ; RSX280 Logical Unit Numbers
-LUNFL1	equ	1	; Emulator file access LUN #1
-LUNFL2	equ	2	; Emulator file access LUN #2
-LUNFL3	equ	3	; Emulator file access LUN #3
-LUNFL4	equ	4	; Emulator file access LUN #4
-LUNTI	equ	5	; Terminal Interface LUN (TI:)
-LUNSY	equ	6	; LUN for rename/search
+LUN_F1	equ	1		; emulator file access LUN #1
+LUN_F2	equ	2		; emulator file access LUN #2
+LUN_F3	equ	3		; emulator file access LUN #3
+LUN_F4	equ	4		; emulator file access LUN #4
+LUN_TI	equ	5		; terminal LUN (TI:)
+LUN_SY	equ	6		; LUN for rename/delete file
+LUN_D	equ	7		; LUN for directory file
+LUN_IX	equ	8		; LUN for accessing INDEXF.SYS
 
 ; Event flags
-TIEFN	equ	1	; event flag for AST terminal input
-TOEFN	equ	2	; event flag for console output
-FIOEFN	equ	3	; event flag for file I/O
-SYEFN	equ	4	; event flag for system I/O
+EFN_TI	equ	1		; event flag for AST terminal input
+EFN_TO	equ	2		; event flag for console output
+EFN_F	equ	3		; event flag for emulation file I/O
+EFN_SY	equ	4		; event flag for rename/delete I/O
+EFN_D	equ	5		; event flag for directory file
+EFN_IX	equ	6		; event flag for INDEXF.SYS
 
 ; Console terminal queue offsets
-TQ.IP	equ	0	; input pointer
-TQ.OP	equ	TQ.IP+1	; output pointer
-TQ.BUF	equ	TQ.OP+1	; buffer
+TQ.IP	equ	0		; input pointer
+TQ.OP	equ	TQ.IP+1		; output pointer
+TQ.BUF	equ	TQ.OP+1		; buffer
 
-flag_r	equ	1 SHL FM.RD	; R mode for file open()
-				; (R opens an existing file)
-flag_w	equ	1 SHL FM.WR	; W mode for file open()
-				; (W creates a new file verson)
+flag_r	equ	1 SHL FM.RD	; read mode for file open()
+				; (opens an existing file)
+flag_w	equ	1 SHL FM.WR	; write mode for file open()
+				; (creates a new file verson)
 flag_rw	equ	(1 SHL FM.RD) OR (1 SHL FM.WR)	; R/W mode for file open()
-				; (RW opens an existing file)
+				; (opens an existing file)
 
-ttibsz	equ	126		; Terminal input buffer size
-
-  endif ;RSX280
+ttibsz	equ	80		; terminal input buffer size
 
 ;*******************************************************************
 ;
@@ -191,11 +202,6 @@ ttibsz	equ	126		; Terminal input buffer size
 	cseg	; The majority of the emulator is in the code segment
 tpa::
 	jp	main		; command line processing
-
-	;Under UZI280 the emulated program (minus the first
-	;three bytes) are patched into this image (cpm.bin)
-	;by overlaying it into the TPA region - see PATCH.C
-	;from the UZI CPMEMU distribution.
 
 	;For RSX280 we load the CP/M .COM file into the TPA
 	;region ourselves (essentially this program behaves
@@ -223,33 +229,31 @@ tpa::
 ; X> prompt.
 ;
 bdos::
-	jp	entry		; make the BDOS look like real CP/M
-	nop			; (it starts with a JP instruction
-	nop			; followed by 3 NOPs)
+	nop			; make the BDOS look like real CP/M
+	nop			; (it starts with 6 NOPs)
+	nop
+	nop
+	nop
 	nop
 entry:
-	ld	hl,0
-	add	hl,sp		; get stack
-	ld	(oldstk),hl
-	ld	hl,tmpstk
-	ld	sp,hl		; new stack
+	ld	(oldstk),sp	; save and switch stack
+	ld	sp,tmpstk
 	ex	de,hl
 	ld	(arg),hl
 	ld	a,c
-	ld	(call),a 	; BDOS function number
+	ld	(func),a 	; BDOS function number
 	push	iy		; RSX280 routines use IY
 	push	ix
 	push	hl
-	pop	iy		; (arg) into IY
+	pop	iy		; (arg) also into IY
 	call	bdos2
 	pop	ix
 	pop	iy
 	ex	de,hl		; save return val in DE
-	ld	hl,(oldstk)
-	ld	sp,hl
+	ld	sp,(oldstk)	; restore stack
 	ld	hl,(arg)
 	ex	de,hl		; restore orig contents of DE
-	ld	a,(call)
+	ld	a,(func)
 	ld	c,a		; restore original contents of C
 	ld	a,l		; get return value into A
 	ld	b,h		; and B for strict compatibility
@@ -259,67 +263,60 @@ bdos2:
 	cp	maxbdosfn+1
 	ret	nc		; function number too big
 	add	a,a
+	ldw	(aret),0	; clear return result code
 	ld	hl,bdostable	; index into table
 	add	hl,a
 	ld	hl,(hl)
 	jp	(hl)		; go there, function just returns above
 
 ;*******************************************************************
-; Convert CP/M FCB name to UZI or RSX file name in variable u_name
-; Illegal filename characters are replaced with a dash "-".
+; Convert CP/M FCB name to RSX280 file name in variable file_name
+; Illegal filename characters are replaced with a dash "-", and
+; a wildcard '?' is translated to a '%'.
+;
 ;
 ; on entry: IY -> pointer to FCB
 ;
 ; on exit : HL -> pointer to string.
 ;	    DE -> pointer to EOS.
 getname:
-	ld	de,u_name
+	ld	de,file_name
 	lda	hl,(iy+fcbname)	; get address of name
-	ld	b,8
+	ld	b,8		;  up to 8 characters
 g_l1:	ld	a,(hl)
 	inc	hl
-	cp	0
-	jr	z,g_l2
-	cp	' '
-	jr	z,g_l2
-  if UZI280
-	call	LCASE
-  endif ;UZI280
-  if RSX280
-	call	chmap
-  endif ;RSX280
+	or	a		; is it NUL?
+	jr	z,g_l2		; yes
+	cp	' '		; is it blank?
+	jr	z,g_l2		; yes
+	call	chmap		; fix-up for RSX280
 	ld	(de),a
 	inc	de
 	djnz	g_l1
 g_l2:
 	lda	hl,(iy+fcbext)	; get address of file extension
 	ld	a,(hl)
-	cp	' '
+	cp	' '		; is it blank?
 	jr	z,g_l4		; no extension if blank
-	ld	a,'.'
+	ld	a,'.'		; add a '.'
 	ld	(de),a
 	inc	de
-	ld	b,3
+	ld	b,3		; now up to 3 characters
 g_l3:
 	ld	a,(hl)
 	inc	hl
-	or	a
+	or	a		; NUL?
 	jr	z,g_l4
-	cp	' '
+	cp	' '		; blank?
 	jr	z,g_l4
-  if UZI280
-	call	LCASE
-  endif ;UZI280
-  if RSX280
-	call	chmap
-  endif ;RSX280
+	call	chmap		; fix-up for RSX280
 	ld	(de),a
 	inc	de
 	djnz	g_l3
 g_l4:
 	xor	a
 	ld	(de),a		; terminate the string with a NUL
-	ld	hl,u_name	; return pointer to name
+	ld	hl,file_name	; return pointer to name
 	ret
 
 ;*******************************************************************
@@ -355,39 +352,16 @@ console_status:
 ;*******************************************************************
 ; BDOS call write string
 print_string:
-
-  if UZI280
-	ld	de,0
-	ld	hl,(arg)
-pr_lop:	ld	a,(hl)
-	inc	de
-	inc	hl
-	cp	'$'
-	jr	nz,pr_lop
-	dec	de		; forget the '$'
-	push	stdout
-	push	iy		; (arg)
-	push	de		; count
-	call	_write
-;	write(1, arg, cnt);
-	pop	de
-	pop	de
-	pop	de
-  endif ;UZI280
-
-  if RSX280
 	push	hl
 	ld	hl,(arg)
 pr_lop:	ld	a,(hl)
 	cp	'$'
 	jr	z,pr_done
-	call	$TTOUT
+	call	writechar
 	inc	hl
 	jr	pr_lop
 pr_done:
 	pop	hl
-  endif ;RSX280
-
 	ret
 
 ;*******************************************************************
@@ -397,50 +371,25 @@ direct_console:
 	cp	0ffh
 	jr	nz,write_console
 	call	char_avail
-;	cpw	hl,0
 	ld	a,h
 	or	l
 	ret	z		; no char available, return zero
 	call	readchar
 	ld	a,(char)
-  if UZI280
-;	if (c == '\n') c = '\r';
-	cp	LF		; '\n'
-	jr	nz,di_01
-	ld	a,CR		; '\r'
-di_01:
-  endif ;UZI280
-	ld	l,a
-	ld	h,0
-	ret
+	jr	rc_1
 
 ;*******************************************************************
 ; BDOS call write console
 write_console:
 	ld	a,(arg)
-  if UZI280
-;	if (arg == '\r') return(0)
-	cp	CR
-	ret	z
-  endif ;UZI280
 	ld	(char),a
-	call	writechar
-	ret
+	jp	writechar
 
 ;*******************************************************************
 ; BDOS call read console.
 read_console:
 	call	readchar
 	ld	a,(char)
-  if UZI280
-	cp	LF		;'\n'
-	jr	nz,rc_1
-;	if (c == '\n') c = '\r';
-	ld	a,CR		;'\r'
-rc_1:
-  endif ;UZI280
-
-  if RSX280
 	call	echoc		; Echo character
 	jr	c,rc_1		; Non-printing?
 	push	af
@@ -448,61 +397,12 @@ rc_1:
 	call	tabout
 	pop	af
 
-rc_1:
-  endif ;RSX280
-	ld	l,a
+rc_1:	ld	l,a		; return result in A and HL
 	ld	h,0
 	ret
 
 ;*******************************************************************
 ; BDOS call read console buffer
-
-  if UZI280
-
-;    int nread;
-;
-;    nread = read(0, arg+2, *arg & 0xff );
-;    --nread;  /* Forget about newline */
-;    arg[nread+2] = 0;   /* Remove newline */
-;    arg[1] = nread;
-;    return(nread);
-
-rdbuf:	ld	hl,(arg)
-;	cpw	hl,0
-	ld	a,h
-	or	l
-	jr	nz,rdb_1
-	ld	hl,080h		; default dma buffer
-	ld	(arg),hl
-	ld	a,0ffh
-	jr	rdb_2
-rdb_1:	ld	a,(hl)
-rdb_2:	inc	hl
-	inc	hl
-	push	stdin
-	push	hl		; arg+2
-	ld	h,0
-	ld	l,a
-	push	hl		; *arg & 0xff
-	call	_read
-	pop	de
-	pop	de
-	pop	de
-	dec	hl		; --nread
-	ex	de,hl
-	ld	hl,(arg)
-	inc	hl
-	ld	(hl),e		; count
-	inc	hl
-	add	hl,de
-	xor	a
-	ld	(hl),a		; remove nl
-	ex	de,hl		; return nread
-	ret
-
-  endif ;UZI280
-
-  if RSX280
 ;
 ; We'll use code similar to the original DRI BDOS for
 ; reading the console buffer (for an authentic "feel")
@@ -512,18 +412,17 @@ rdb_2:	inc	hl
 rdbuf:	ld	a,(column)	; save cursor position
 	ld	(strtcol),a	;  for processing Ctrl-X and Ctrl-H
 	ld	hl,(arg)	; point HL to buffer
-;	cpw	hl,0		; Is pointer is zero?
-	ld	a,h
+	ld	a,h		; is pointer NULL
 	or	l
 	jr	nz,rdbufg
-	ld	hl,cpmdma	; Yes, use default DMA buffer
+	ld	hl,cpmdma	; yes, use default DMA buffer
 rdbufg:	ld	c,(hl)		; first byte is buffer size in C
 	inc	hl
 	push	hl		; save pointer to available space
 	ld	b,0		; number of chars input is in B
 readnx:	push	bc		; save count and buf size
 	push	hl		; save buf pointer
-readn0:	call	conin		; Get next character to A
+readn0:	call	conin		; get next character to A
 	and	7Fh		; strip parity
 	pop	hl		; restore buf pointer
 	pop	bc		;  count and size
@@ -576,7 +475,7 @@ notx:	cp	15h		; Ctrl-U (cancel line)?
 notu:	cp	12h		; Ctrl-R?
 	jr	nz,notr
 linelen:
-	push	bc		; Re-type the current line
+	push	bc		; re-type the current line
 	call	crlfp
 	pop	bc
 	pop	hl		; HL back to beginning of line buf
@@ -584,9 +483,9 @@ linelen:
 	push	bc
 rep0:
 	ld	a,b
-	or	a		; Have we done the whole line yet?
+	or	a		; have we done the whole line yet?
 	jr	z,rep1
-	inc	hl		; No, get next character
+	inc	hl		; no, get next character
 	ld	c,(hl)
 	dec	b		; count it
 	push	bc
@@ -612,7 +511,7 @@ backsp:
 notr:
 rdecho:
 	inc	hl
-	ld	(hl),a		; Store character in buffer
+	ld	(hl),a		; store character in buffer
 	inc	b		; and count it
 rdech1:
 	push	bc
@@ -621,20 +520,20 @@ rdech1:
 	call	ctlout
 	pop	hl
 	pop	bc
-	ld	a,(hl)		; Was it a Ctrl-C?
+	ld	a,(hl)		; was it a Ctrl-C?
 	cp	ETX
 	ld	a,b
 	jr	nz,notc
-	cp	1		; Only if at start of line
-	jp	z,$EXITC	; Exit program
+	cp	1		; only if at start of line
+	jp	z,done		; exit program back to command input
 notc:
-	cp	c		; Have we filled the buffer?
-	jp	c,readnx	; No
+	cp	c		; have we filled the buffer?
+	jp	c,readnx	; no
 readen:
-	inc	hl		; Store the line terminator in
+	inc	hl		; store the line terminator in
 	ld	(hl),a		;  the buffer
 
-	pop	hl		; End the line and save the
+	pop	hl		; end the line and save the
 	ld	(hl),b		;  number of characters entered
 
 	push	hl
@@ -650,16 +549,20 @@ crlf:
 	ld	c,LF
 	jr	conout
 
+; Space
+space:	ld	c,' '
+	jr	conout
+
 ; Backspace cursor
 backup:	call	pctlh
-	ld	c,' '
-	call	_conout
+	call	space
 pctlh:
 	ld	c,BS
-	jp	_conout
+;	jp	conout
 
 ;*******************************************************************
-; Console output and keep track or cursor position
+; Console output and keep track of the cursor position.
+; Also does primitive flow-control using Ctrl-S.
 ; Character to output is in C
 conout:	ld	a,(compcol)
 	or	a
@@ -668,7 +571,8 @@ conout:	ld	a,(compcol)
 	call	conbrk		; check for Ctrl-S
 	pop	bc
 	push	bc
-	call	_conout
+	ld	a,c		; output character to console
+	call	$TTOUT
 	pop	bc
 	; No printer echo (was here)
 compout:
@@ -694,97 +598,6 @@ notbacksp:
 	ret	nz
 	ld	(hl),0		; LF resets column to 0
 	ret
-
-;*******************************************************************
-; Console handlers
-;
-; Read console character to A
-conin:	ld	hl,kbchar	; Any previous character seen?
-	ld	a,(hl)
-	ld	(hl),0
-	or	a
-	ret	nz		; Yes, return it
-	jp	_conin		; else call BIOS
-
-; Read console character with echo
-conech:	call	conin
-	call	echoc
-	ret	c
-	push	af
-	ld	c,a
-	call	tabout
-	pop	af
-	ret
-
-; Check for printable char in A
-;
-; Return Z bit set if terminator found
-; and Carry set if non-printable
-echoc:
-	cp	CR
-	ret	z
-	cp	LF
-	ret	z
-	cp	TAB
-	ret	z
-	cp	BS
-	ret	z
-	cp	' '
-	ret
-
-; Check for character ready
-conbrk:	ld	a,(kbchar)
-	or	a
-	jr	nz,conb1	; skip if active kbchar
-	call	_conist		; call BIOS
-	and	1
-	ret	z		; None available
-	call	_conin		; call BIOS to read it
-	cp	13h		; Is it a Ctrl-S?
-	jr	nz,conb0
-	call	_conin		; Yes, get another char
-	cp	ETX		; Is it a Ctrl-C?
-	jp	z,$EXITC	; Yes, exit tthe program
-	xor	a		; No, return with zero in A
-	ret
-
-conb0:	ld	(kbchar),a	; save character
-conb1:	ld	a,1		; return non-zero
-	ret
-
-; Show a control character in printable form
-ctlout:	ld	a,c
-	call	echoc
-	jr	nc,tabout	; not a control char
-	push	af
-	ld	c,'^'		; output caret
-	call	conout
-	pop	af
-	or	'@'		; make it printable
-	ld	c,a
-tabout:	ld	a,c
-	cp	TAB		; tab?
-	jp	nz,conout
-tab0:
-	ld	c,' '		; expand tabs to the right number
-	call	conout		;  of spaces
-	ld	a,(column)
-	and	07h
-	jr	nz,tab0
-	ret
-
-; Cancel RDLIN input line ready for re-input
-crlfp:
-	ld	c,'#'		; signal a deleted line with a "#"
-	call	conout
-	call	crlf
-crlfp0:	ld	a,(column)	; move the cursor back to starting
-	ld	hl,strtcol	; position
-	cp	(hl)
-	ret	nc
-	ld	c,' '
-	call	conout
-	jr	crlfp0
 
 ;*******************************************************************
 ; Copy parameter pointed to by IX into the CP/M FCB pointed to by HL
@@ -876,22 +689,18 @@ delimiter:
 	cp	'_'
 	ret
 
-  endif ;RSX280
-
 ;*******************************************************************
 ; BDOS call open file.
 ;
 ; On entry: IY -> pointer to FCB
 ;
 openfile:
-  if RSX280
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%BDOS-I-Open FCB at ',0
+  if 0;DEBUG
+	call	$PSTR
+	defb	'BDOS-I-Open FCB at ',0
 	ld	hl,(arg)
 	call	$HLHEX
-    endif ;DEBUG
-  endif ;RSX280
+  endif ;DEBUG
 
 	; test for reopen
 	ld	h,0
@@ -899,7 +708,7 @@ openfile:
 	cpw	hl,MAGIC
 	jr	nz,open2
 	ld	h,0
-	ld	l,(iy+fcbdesc)
+	ld	l,(iy+fcblun)
 	push	hl
 	call	_close		; was open
 	pop	de
@@ -911,31 +720,10 @@ open2:
 	pop	de
 	pop	de
 	cpw	hl,-1
-  if RSX280
 	jr	z,no_good	; we don't do search paths for now
-  endif
-  if UZI280
-	jr	nz,open_ok
-
-; open along search path
-;	strcpy(p_name,SRCH_PATH);
-	ld	de,p_name
-	ld	hl,SRCHPATH
-	call	strcpy		; advance string pointer
-;	strcat(p_name,getname(blk));
-	ld	hl,u_name
-	call	strcpy
-	push	p_name
-	push	flag_rw
-	call	_open		; open along new path
-	pop	de
-	pop	de
-	cpw	hl,-1
-	jp	z,no_good
-  endif ;UZI280
 
 open_ok:
-	ld	(iy+fcbdesc),l	; save the file number/LUB
+	ld	(iy+fcblun),l	; save the file number/LUB
 	ld	hl,MAGIC
 	ld	(iy+fcbmagic),l ; make it magic (opened)
 	ld	hl,0		; return no error
@@ -952,53 +740,34 @@ no_good:
 ; On entry: IY -> pointer to FCB
 ;
 makefile:
-  if RSX280
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%BDOS-MAKEFILE',0
+  if 0;DEBUG
+	call	$PSTR
+	defb	'BDOS-MAKEFILE',0
 	call	dumpfcb
-    endif ;DEBUG
-  endif ;RSX280
+  endif ;DEBUG
 
 	call	getname		; convert to valid filename
 	push	hl		; str adr
-	push	666Q
 	call	_creat		; create the file
 ;    desc = creat(getname(blk), 0666);
 	pop	de
-	pop	de
 	cpw	hl,-1
-	jp	z,no_good
-  if UZI280
-	push	hl
-	call	_close		; close it
-	pop	de
-	ld	hl,u_name 	; same as second call to getname
-	push	hl
-	push	flag_rw
-	call	_open		; and reopen for R/W
-	pop	de
-	pop	de
-	cpw	hl,-1
-	jp	z,no_good
-  endif ;UZI280
+	jr	z,no_good
 
 ;    blk->magic= MAGIC;
 ;    blk->desc = desc;
 ;    blk->rec  = 0;
-	ld	(iy+fcbdesc),l
+	ld	(iy+fcblun),l
 	ld	hl,MAGIC
 	ld	(iy+fcbmagic),l
 	ld	hl,0
 	ldw	(iy+fcbrec),hl
 	ld	(iy+fcbcr),l
-  if RSX280
-    if 0 ;DEBUG
+  if 0;DEBUG
 	push	hl
 	call	dumpfcb
 	pop	hl
-    endif ;DEBUG
-  endif ;RSX280
+  endif ;DEBUG
 	ret
 
 ;*******************************************************************
@@ -1008,14 +777,646 @@ makefile:
 ;
 closefile:
 	ld	h,0
-	ld	l,(iy+fcbdesc)
+	ld	l,(iy+fcblun)
 	push	hl
 	call	_close
 	pop	de
 	cpw	hl,-1
-	jp	z,no_good
+	jr	z,no_good
 	ld	hl,0
 	ld	(iy+fcbmagic),l
+	ret
+
+;*******************************************************************
+; BDOS call search first
+;
+; On entry: IY -> pointer to FCB
+;
+search_first:
+  if DEBUG
+	call	$PSTR
+	defb	'S1st-I-FCB',0
+	call	dumpfcb
+  endif ;DEBUG
+
+	ld	a,(diropn)	; is directory already open?
+	or	a
+	jr	z,sf_1		; no
+
+	ld	ix,fsrdir	; yes, re-open it to get updates
+	call	FCLOSE
+	jr	nc,sf_1
+
+  if DEBUG
+	push	af
+	call	$PSTR
+	defb	'S1st-E-Closing dir',0
+	pop	af
+  endif ;DEBUG
+	jp	sf_err
+
+sf_1:	ld	hl,cdname
+	ld	c,GD.TSK	; fetch the current directory
+	sc	.GDIR
+	jp	c,sf_err	; some problem, return error
+
+	ld	a,(hl)		; is there a current directory?
+	or	a
+	jr	nz,sf_2		; yes
+	ld	hl,mdfn		; no - use master directory
+
+sf_2:	ld	hl,cdname
+	ld	de,dirname
+	call	strcpy		; construct directory filename
+	ld	hl,dirtype
+	call	strcpy		; dirfn now contains dir file
+
+	ld	hl,dirfn
+	ld	ix,FDB_D
+	call	PFN		; parse it into FDB for directory
+	jp	c,sf_err
+
+	ld	ix,fsrdir
+	call	FOPEN		; open directory
+	jr	nc,sf_4
+
+	jp	c,sf_err
+
+sf_4:	ld	a,1		; mark directory file as open
+	ld	(diropn),a	;  and not end of file (bit 7 off)
+
+	ld	d,0		; seek to start of
+	ld	e,d		;  directory file
+	ld	b,d
+	ld	c,d
+
+	ld	(dirrec),de	; directory entry pointer to beginning
+	ld	(dirfsize),de	; clear previous file size too
+
+	ld	ix,fsrdir	; seek to DEBC record
+	call	FSEEK
+	jr	nc,sf_5
+
+  if DEBUG
+	push	af
+	call	$PSTR
+	defb	'S1st-E-Seek dir',0
+	pop	af
+  endif ;DEBUG
+	jp	sf_err
+
+sf_5:	ld	a,(idxopn)	; is INDEXF.SYS open?
+	or	a
+	jr	z,sf_6		; No
+
+	ld	ix,fsridx	; Yes, re-open it to
+	call	FCLOSE		;  refresh any updated files
+	jr	nc,sf_6
+
+  if DEBUG
+	push	af
+	call	$PSTR
+	defb	'S1st-E-Closing idx',0
+	pop	af
+  endif ;DEBUG
+	jp	sf_err
+
+sf_6:	ld	hl,idxfn	; parse INDEXF.SYS filename
+	ld	ix,FDB_IX	;  into the FDB
+	call	PFN
+	jr	c,sf_err
+
+	ld	ix,fsridx
+	call	FOPEN		; open INDEXF.SYS
+	jr	nc,sf_7
+
+  if DEBUG
+	push	af
+	call	$PSTR
+	defb	'S1st-E-Open idx',0
+	pop	af
+  endif ;DEBUG
+	jr	sf_err
+
+sf_7:
+	ld	d,0		; seek to start of
+	ld	e,d		;  index file
+	ld	b,d
+	ld	c,d
+	ld	ix,fsridx
+	call	FSEEK
+
+;**Dummy read - otherwise first random read is wrong record
+;	ld	de,idxentry
+;	ld	bc,IESZ
+;	call	FREAD
+	jr	nc,sf_8
+
+  if DEBUG
+	push	af
+	call	$PSTR
+	defb	'S1st-E-Index seek',0
+	pop	af
+  endif ;DEBUG
+	jr	sf_err
+
+sf_8:	ld	a,1
+	ld	(idxopn),a	; remember INDEXF.SYS is open
+
+	ld	c,0		; length assuming '?' true
+	ld	a,(iy+fcbdrive)	; if drive code is '?',
+	cp	'?'		;  we match all files on the
+	jr	z,qselect	;  current drive
+
+	ld	a,(iy+fcbex)	; get extent from CP/M FCB
+	cp	'?'		; if it is wildcard then clear
+	jr	z,sf_9		; module number (s2 byte)
+	ld	(iy+fcbmodnum),0
+
+sf_9:	ld	c,fcbnamlen	; length to match
+
+qselect:
+	call	search		; search and construct directory entry
+
+dir_to_user:
+	ld	hl,(dmaadr)
+	ex	de,hl
+	ld	hl,(buffa)	; copy directory buffer to user
+	ld	bc,recsiz	;  DMA address
+	ldir
+	ld	hl,(aret)
+	ret
+
+sf_err:
+	ld	h,0
+	ld	l,a
+	ld	(errno),hl
+  if DEBUG
+	push	af
+	call	$PSTR
+	defb	'S1st-E-Err=',0
+	pop	af
+	call	$AHEX
+  endif ;DEBUG
+	jp	no_good
+
+;******************************************************************
+; BDOS search next
+;
+search_next:
+  if DEBUG
+	call	$PSTR
+	defb	'Snxt',0
+  endif ;DEBUG
+
+	ld	iy,(searcha)	; point to FCB from search_first
+	call	searchn		; search for next match
+	jr	dir_to_user
+	
+; Search for directory element of length C pointed to by IY
+search:	ld	a,0FFh
+	ld	(dirloc),a	; assume not found
+	ld	hl,searchl
+	ld	(hl),c		; save search length and
+	ld	(searcha),iy	;  pointer to CP/M FCB
+	call	set_end_dir	; init dcnt to 0FFFFh
+
+	; fall through into search next
+
+; Search for the next directory element
+searchn:
+	ld	c,FALSE
+	call	read_dir	; read next directory element
+	call	end_of_dir
+	jr	z,search_fin	; we reached the end - stop search
+
+	ld	hl,(searcha)
+	ex	de,hl		; DE points to user FCB
+	ld	a,(de)		; keep searching if first char is 0E5h
+	cp	empty
+	jr	z,searchnext
+	push	de		; are we past the end of directory?
+	call	compcdr
+	pop	de
+	jr	nc,search_fin	; yes, stop search
+
+searchnext:
+  if DEBUG
+	push	hl
+	push	de
+	push	bc
+	call	$PSTR
+	defb	'srch=',0
+	ld	hl,(dcnt)
+	call	$HLHEX
+	pop	bc
+	pop	de
+	pop	hl
+  endif ;DEBUG
+	call	getdptra	; HL = buffa + dptr
+	ld	a,(searchl)	;  and search length to C
+	ld	c,a
+	ld	b,0		; B counts up, C counts down
+
+searchloop:
+	ld	a,c
+	or	a
+	jr	z,endsearch
+	ld	a,(de)
+	cp	'?'		; wildcard is '?'
+	jr	z,searchok	; matches, so try next char
+	ld	a,b		; have we reached past the extent
+	cp	fcbubytes
+	jr	z,searchok
+	cp	fcbex		; is it the extent field?
+	ld	a,(de)		; fetch FCB value
+	jr	z,searchext	; skip to search extent
+	sub	(hl)
+	and	7Fh		; mask to 7-bits
+	jr	nz,searchn	; skip if not matched
+	jr	searchok	; it matched
+
+searchext:
+	; A has the extent number to match
+	push	bc
+	ld	c,(hl)		; directory character to C
+	call	compext		; compare char
+	pop	bc
+	jr	nz,searchn	; skip if no match
+
+searchok:
+	; Current character matches
+	inc	de
+	inc	hl
+	inc	b
+	dec	c
+	jr	searchloop
+
+endsearch:
+	; Entire name matches, return dir position
+	ld	a,(dcnt)
+	and	dskmsk
+	ld	(lret),a	; L return is position
+	ld	hl,dirloc
+	ld	a,(hl)		; was it located?
+	rla
+	ret	nc		; no, it's 0FFh
+	xor	a
+	ld	(hl),a		; yes, change it to zero
+	ret
+
+search_fin:
+	call	set_end_dir
+	ld	a,0FFh
+	ld	(aret),a
+	ret
+
+set_end_dir:
+	ld	hl,-1		; set dir count to -1
+	ld	(dcnt),hl
+	ret
+
+end_of_dir:
+	ld	hl,dcnt		; return Z flag if at end
+	ld	a,(hl)		;  of directory
+	inc	hl
+	cp	(hl)
+	ret	nz
+	inc	a		; 0FFh becomes 0
+	ret
+
+; Get pointer into fake directory buffer to HL
+getdptra:
+	ld	hl,(buffa)
+	ld	a,(dptr)
+	add	hl,a
+	ret
+
+; Check if we're past the end of the directory
+compcdr:
+	ld	hl,(dcnt)
+	ex	de,hl		; directory counter to DE
+	ld	hl,(cdrmaxa)	; address of maximum to HL
+	ld	a,e
+	sub	(hl)		; low(dcnt) - low(cdrmax)
+	inc	hl
+	ld	a,d
+	sbc	a,(hl)		; high(dcnt) - high(cdrmax)
+	ret			; Carry is set if cdrmax > dcnt
+
+; Compute HL = DE - HL
+subdh:	ld	a,e
+	sub	l
+	ld	l,a
+	ld	a,d
+	sbc	a,h
+	ld	h,a
+	ret
+
+; Read next directory entry
+read_dir:
+	ld	hl,(dirmax)	; maximum dir entries -1 to DE
+	ex	de,hl
+	ld	hl,(dcnt)	; increment directory entry count
+	inc	hl
+	ld	(dcnt),hl
+	call	subdh		; DE - HL
+	jr	nc,read_dir0
+	jr	set_end_dir	; set dcnt to end of directory
+
+read_dir0:
+	ld	a,(dcnt)
+	and	dskmsk		; use the lower 2 bits
+	mult	a,dirlen	;  to point to directory entry
+	ld	a,l
+	ld	(dptr),a	; save pointer
+	or	a		; non-zero means we already
+	ret	nz		;  have read the next entry
+
+	push	bc
+	call	rd_dir
+	pop	bc
+	ret
+
+rd_dir:	; Read directory into the sector pointed to by BUFFA
+	; constructing a fake CP/M style directory sector
+
+	ld	hl,(dirfsize)	; are there more extents
+	ld	a,h		;  for the previous file?
+	or	l
+	jp	nz,rd_more	; yes, do them
+
+	; Read next directory entry
+rd_dire:
+	ld	a,(diropn)	; have we reached the end of the
+	rla			;  directory file?
+	jr	c,rd_blank	; yes, make an empty extent
+
+	xor	a
+	ld	(extent),a	; clear extent value
+
+	ld	ix,fsrdir	; read next directory entry
+	ld	de,direntry	;  from RSX280 directory file
+	ld	bc,DESZ
+	call	FREAD
+	jr	c,rd_end_dir	; Any error, assume end-of-dir
+	ld	a,c		; bytes read
+	cp	DESZ
+	jr	z,rd_n1
+
+rd_end_dir:
+	; no more files, just fill an empty extent record
+	ld	hl,diropn
+	set	7,(hl)		; mark end-of-file reached
+
+rd_blank:
+	call	getdptra	; point HL to CP/M FCB entry
+	ld	a,EMPTY
+	ld	b,dirlen
+rd_b0:	ld	(hl),a		; fill it with E5's
+	inc	hl	
+	djnz	rd_b0
+	jp	rd_next
+
+rd_n1:
+	incw	(dirrec)	; bump directory record counter
+
+  if DEBUG
+	push	bc
+	push	hl
+	call	$PSTR
+	defb	'dir',0
+	ld	hl,direntry
+	ld	bc,DESZ
+	call	$DUMPM
+	pop	hl
+	pop	bc
+  endif ;DEBUG
+
+	ld	ix,direntry	; point to directory file entry
+
+	ld	hl,(ix+DE.VER)	; only use version 1 files
+	dec	hl
+	ld	a,h
+	or	l
+	jr	nz,rd_dire
+
+	ldw	hl,(ix+DE.INDX)	; get file link count
+	ld	a,h
+	or	l		; is it zero?
+	jr	z,rd_dire	; yes, skip to next directory entry
+
+	dec	hl		; it's 1-based inode number
+	multuw	hl,IESZ		; compute index file position
+				; result in DEHL
+	ld	b,h		; move low 16-bits to BC
+	ld	c,l
+
+  if 0;DEBUG
+	push	hl
+	push	bc
+	push	de
+	call	$PSTR
+	defb	'idxr=',0
+	pop	hl
+	push	hl
+	call	$HLHEX
+	pop	hl
+	ex	(sp),hl
+	push	hl
+	call	$HLHEX
+	pop	bc
+	pop	de
+	pop	hl
+  endif ;DEBUG
+
+	ld	ix,fsridx	; seek to DEBC record in INDEXF.SYS
+	call	FSEEK
+	jr	c,rd_end_dir	; seek error means the end
+
+	ld	de,idxentry
+	ld	bc,IESZ
+	call	FREAD
+	jp	c,rd_end_dir	; error reading index is also the end
+
+  if 0;DEBUG
+	push	hl
+	push	bc
+	call	$PSTR
+	defb	'idx',0
+	ld	hl,idxentry
+	ld	bc,IESZ
+	call	$DUMPM
+	pop	bc
+	pop	hl
+  endif ;DEBUG
+
+	ld	ix,idxentry	; is it a file?
+	bit	FA.FILE,(ix+IE.ATTR)
+	jp	nz,rd_dire	; no, read next dir entry
+
+	ldw	hl,(ix+IE.LCNT)	; if link count is zero
+	ld	a,h		;  this file has been deleted
+	or	l
+	jp	z,rd_dire	; skip to next entry
+
+	ldw	hl,(ix+IE.USED)	; 512-byte blocks used to BCHL
+	ld	b,0
+	ld	c,(ix+IE.USED+2)
+	ex	de,hl		; low 16-bits to DE while
+	ldw	hl,(ix+IE.LBCN)	;  we get last block count into
+	ex	de,hl		;  DE, and low 16-bits back to HL
+	ld	a,c
+	or	b		; greater than 65535 blocks?
+	jr	nz,sz_compute	; yes - it's a big file
+	ld	a,h
+	or	l		; no blocks allocated?
+	jr	z,sz_zero	; yes - it's an empty file
+sz_compute:
+	push	de		; save last block byte count
+	multuw	hl,4		; convert blocks to 128-byte sectors -> DEHL
+	push	hl		; save low 16-bits on stack
+	ld	h,b
+	ld	l,c
+	add	hl,bc
+	add	hl,hl		; high byte * 4 too in BC
+	add	hl,de		; add it to DE (high 16-bits)
+	ex	de,hl		; back to DE
+	pop	hl		; sectors now in DEHL
+	ex	(sp),hl		; low 16-bits back to stack
+	; HL now contains last block byte count
+	divu	hl,recsiz	; divide it by a sector-size
+	push	af		; save quotient in A
+	ld	a,l		; is the remainder 0?
+	or	a
+	jr	z,sz_1		; yes - it's an exact sector size
+	pop	af		; restore quotient to A
+	inc	a		; add an extra sector
+	jr	sz_2
+sz_1:	pop	af		; restore quotient to A
+sz_2:	pop	hl		; restore low 16-bits
+sz_3:	cp	4		; was the last sector full?
+	jr	nc,sz_dehl	; yes - no need to adjust
+	inc	a
+	dec	l		; no - reduce the sector count
+	jp	p,sz_3		; any borrow?
+	dec	h		; yes, decrement H too
+	jp	p,sz_3		; any borrow?
+	dec	de		; yes, decrement DE too
+	jr	sz_3
+
+sz_zero:
+	ld	d,0		; file size is zero
+	ld	e,d
+	ld	h,d
+	ld	l,d
+
+sz_dehl:
+	; DEHL now has the number of used sectors for this file.
+	; We can have up to 128 sectors (128-byte) per extent
+	; and extents range between 0 and 31 (32 of them), The
+	; maximum filesize is 65536 sectors (8M bytes), therefore
+	; we don't do larger than 65535 sectors (i.e. quit if the
+	; high 16-bits of the size is not zero).
+	ld	(dirfsize),hl	; save low 16-bits
+	ld	a,d		; is high 16-bits non-zero?
+	or	e
+	jp	nz,rd_dire	; yes, silently ignore huge files
+
+rd_more:
+
+  if 0;DEBUG
+	call	$PSTR
+	defb	'size=',0
+	ld	hl,(dirfsize)
+	call	$HLHEX
+  endif ;DEBUG
+
+	call	getdptra	; point DE to directory sector
+	ld	(hl),0		; file is in user area 0
+	inc	hl
+	ex	de,hl
+	ld	hl,direntry+2	; copy filename (8-chars)
+	ld	bc,8
+	ldir
+	inc	hl		; skip 9th char
+	ld	bc,3		; then extension (3-chars)
+	ldir
+	; DE now points to the extent byte
+	ld	hl,(dirfsize)	; get file size in sectors to HL
+	cpw	hl,recsiz+1	; is it less than a full sector?
+	jr	c,rd_single	; yes - only a single extent left
+
+	ex	de,hl		; pointer back to HL, size in DE
+	ld	a,(extent)	; copy extent byte
+	ld	(hl),a
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	(hl),128	; record count is 80h
+	ex	de,hl		; size back to HL, ptr to DE
+	subw	hl,128		; subtract 128 sectors
+	ld	(dirfsize),hl	; save for next extent
+	inc	(extent)	; increment extent
+	jr	rd_ndp
+
+rd_single:
+	ex	de,hl		; pointer back to HL, size in DE
+	ld	a,(extent)
+	ld	(hl),a		; copy extent byte
+	inc	hl
+	inc	hl
+	inc	hl
+	ld	(hl),e		; record count
+	ex	de,hl		; ptr back to DE
+	ldw	(dirfsize),0	; clear size of file
+rd_ndp:
+	ex	de,hl
+	ld	de,(dirrec)	; store directory entry
+	inc	hl		;  number in the first
+	ldw	(hl),de		;  two allocation bytes
+
+rd_next:
+
+  if 0;DEBUG
+	push	bc
+	push	hl
+	call	$PSTR
+	defb	'entry',0
+	call	getdptra	; print out directory entry
+	ld	bc,dirlen
+	call	$DUMPM
+	call	$TTGC
+	cp	'Q'
+	jp	z,$EXIT
+	pop	hl
+	pop	bc
+  endif ;DEBUG
+
+	ld	a,(dptr)	; point to next dir entry
+	add	dirlen
+	and	7Fh
+	ld	(dptr),a
+	jp	nz,rd_dir	; do next entry
+
+	ret			; done if dptr is zero
+
+; Compare extent number in A with that in C
+; Return non-zero if they don't match.
+compext:
+	push	bc
+	push	af
+	ld	a,(extmsk)
+	cpl
+	ld	b,a		; B has negated form of extent mask
+	ld	a,c
+	and	b
+	ld	c,a		; low bits removed from C
+	pop	af
+	and	b		; low bits removed from a
+	sub	c
+	and	maxext
+	pop	bc
 	ret
 
 ;*******************************************************************
@@ -1030,92 +1431,25 @@ delete:
 	pop	de
 	cpw	hl,-1
 	jp	z,no_good
-	ld	hl,0
-	ret
+	jp	ret_hl_0
 
 ;*******************************************************************
 ; BDOS call rename file
 ;
 ; On entry: IY -> pointer to FCB
 ;
-  if UZI280
-;    static char cmd[40];
-;    strcpy(cmd, "mv ");
-;    strcat(cmd, getname(blk));
-;    strcat(cmd, " ");
-;    strcat(cmd, getname( (struct fcb *)&(blk->desc)));
-;    system(cmd);
-;    return(0);
-rename:
-	ld	hl,p_name
-	ld	a,'m'
-	ld	(hl),a
-	inc	hl
-	ld	a,'v'
-	ld	(hl),a
-	inc	hl
-	ld	a,' '
-	ld	(hl),a
-	inc	hl
-	push	hl		; save string pointer
-	call	getname
-	pop	de
-	call	strcpy
-	ld	a,' '
-	ld	(de),a		; p_name = "mv oldname "
-	inc	de
-	push	de		; save string pointer
-	ld	a,16
-	add	iy,a		; IY pointer to newname-1
-	call	getname
-	pop	de
-	call	strcpy		; p_name = "mv oldname newname"
-	call	_fork		; fork new process
-	ld	(char),hl	; pid
-;	cpw	hl,0
-	ld	a,h
-	or	l
-	jr	nz,parent
-	push	shell		; we are the child
-	push	argv
-	push	(environ)
-	call	_execve		; should not return
-;	execve("/bin/sh",argv,environ)
-	pop	de
-	pop	de
-	pop	de
-	ld	hl,127
-	push	hl
-	call	_exit		; return error code 127
-
-parent:
-	push	arg
-	call	_wait
-	pop	de
-	cpw	hl,(char)
-	jr	nz,parent	; wait for exited child
-	ld	hl,(arg)	; return child exit status
-	ret
-  endif ;UZI280
-
-  if RSX280
-
-; rename file
-;
-; IY -> CP/M FCB
-;
 ; The first filename at fcb.name is renamed to the one given
 ; at fcb.dm (16 byte offset).
 ;
 rename:
 	push	iy		; save pointer to CP/M FCB
-    if 0;DEBUG
-	call dumpfcb
-    endif ;DEBUG
+  if 0;DEBUG
+	call	dumpfcb
+  endif ;DEBUG
 	ld	a,16
 	add	iy,a		; point to the new name
 	call	getname
-	ld	hl,u_name
+	ld	hl,file_name
 	ld	de,newnam	; copy to the new name string
 	call	strcpy
 ;**TODO we should do a lookup to get the highest version number
@@ -1123,7 +1457,7 @@ rename:
 	call	strcpy
 	pop	iy		; restore IY and now the old name
 	call	getname
-	ld	hl,u_name
+	ld	hl,file_name
 	ld	de,oldnam
 	call	strcpy
 ;**TODO same as above - should lookup to get version number
@@ -1149,20 +1483,14 @@ rename:
 	ld	de,(FDBOLD+F.DEV) ; use old device name
 	ld	a,(FDBOLD+F.UNIT)
 	ld	c,a
-	ld	b,LUNSY
+	ld	b,LUN_SY
      	sc	.ALUN		; assign LUN to do the rename
-	jr	nc,rn_3
-
-    if DEBUG
-	call	$PRINT
-	defb	CR,LF,'%RENAME-E-LUN assign failed',0
-    endif ;DEBUG
-	jr	rn_err
+	jr	c,rn_err
 
 rn_3:
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%RENAME-I-from "',0
+  if 0;DEBUG
+	call	$PSTR
+	defb	'RENAME-I-from "',0
 	ld	hl,oldnam
 	call	$MSGHL
 	call	$PRINT
@@ -1171,18 +1499,18 @@ rn_3:
 	call	$MSGHL
 	call	$PRINT
 	defb	'"',0
-      if 0
+    if 0
 	ld	hl,FDBOLD
 	call	dumpfdb
 	ld	hl,FDBNEW
 	call	dumpfdb
-      endif
-    endif ;DEBUG
+    endif
+  endif ;DEBUG
 
 	ld	hl,FDBOLD
 	ld	de,FDBNEW
-	ld	c,LUNSY
-	call	FREN		; Do the rename
+	ld	c,LUN_SY
+	call	FREN		; do the rename
 	jr	c,rn_err
 
 	ld	hl,0
@@ -1192,16 +1520,14 @@ rn_3:
 rn_err:
 	ld	h,0
 	ld	l,a
-    if DEBUG
-	call	$PRINT
-	defb	CR,LF,'%RENAME-E-Error=',0
+  if 0;DEBUG
+	call	$PSTR
+	defb	'RENAME-E-Error=',0
 	call	$HLHEX
-    endif ;DEBUG
+  endif ;DEBUG
 	ld	(errno),hl
 	ld	hl,-1
 	ret
-
-  endif
 
 ;*******************************************************************
 ; BDOS call read file seq.
@@ -1221,7 +1547,7 @@ readfile:
 ;	dmaadr[nread] = 0x1a;
 	ld	a,l		; all 128 bytes read?
 	or	a
-	jr	z,r_iseof	; none read - is EOF
+	jr	z,ret_hl_1	; none read - is EOF
 	cp	128
 	jr	nc,r_ok		; yes
 
@@ -1231,27 +1557,22 @@ readfile:
 	ld	a,CTRLZ		; add an end-of-file marker
 	ld	(hl),a
 r_ok:
-	ld	hl,0		; no errors
-	ret
+	jp	ret_hl_0	; no errors
 
 r_eof:
-  if RSX280
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%EOF-I-Reading LUN='
+  if 0;DEBUG
+	call	$PSTR
+	defb	'EOF-I-Reading LUN='
 	ld	h,0
-	ld	l,(iy+fcbdesc)
+	ld	l,(iy+fcblun)
 	call	$HLHEX
-    endif ;DEBUG
+  endif ;DEBUG
 	ld	hl,(errno)
-	cpw	hl,E.EOF	; Is it end-of-file?
+	cpw	hl,E.EOF	; is it end-of-file?
 	jp	nz,no_good
-r_iseof:
-	ld	hl,1		; Yes
+ret_hl_1:
+	ld	hl,1		; yes
 	ret
-  else
-	jp	no_good
-  endif ;RSX280
 
 ;*******************************************************************
 ; BDOS function write file seq.
@@ -1259,21 +1580,14 @@ r_iseof:
 ; On entry: IY -> pointer to FCB
 ;
 writefile:
-;ifdef EDITOR
-;    register i;
-;	/* write until CPM EOF (^Z) found */
-;    i = 0;
-;    while( (dmaadr[i] != 0x1A) && (i < 128) )
-;	i++;
-;    if (write(blk->desc, dmaadr, i) != i )
-;#else
 	call	write128
 ;    if (write(blk->desc, dmaadr, 128) != 128 )
+	ld	h,b
+	ld	l,c
 	cpw	hl,128
 	jp	nz,no_good
 	incw	(iy+fcbrec)
-	ld	hl,0
-	ret
+	jp	ret_hl_0
 
 ;*******************************************************************
 ; BDOS Random read/write. Max file length 8192 K
@@ -1296,10 +1610,10 @@ readrandom:
 	ld	l,c
 	ld	a,l
 	cp	128		; nread < 128
-	jr	nc,rr_1
-	ld	hl,1		; EOF
-	ret
-rr_1:	ld	hl,0
+	jr	nc,ret_hl_0
+	jp	ret_hl_1	; EOF
+ret_hl_0:
+	ld	hl,0
 	ret
 
 
@@ -1307,55 +1621,13 @@ writerandom:
 	call	rseek
 	call	write128
 ;    if ( write(blk->desc, dmaadr, 128) != 128 )
+	ld	h,b
+	ld	l,c		; bytes written to HL
  	call	rseek
 	cpw	hl,128
 	jp	nz,no_good
-	ld	hl,0
-	ret
+	jp	ret_hl_0
 
-  if UZI280
-; record seek (128 byte) for read/write random
-rseek:
-	push	hl		; save HL
-	ld	h,0
-	ld	l,(iy+fcbdesc)
-	push	hl
-	ldw	hl,(iy+fcbran)
-	ldw	(iy+fcbrec),hl
-	ld	e,0
-	ld	a,l
-	and	011b		; a = ranrec % 4
-	srl	a
-	ld	d,a
-	rr	e		; de = 128 * (ranrec % 4)
-	push	de
-	push	0
-	call	_seek
-;    seek(blk->desc,128*(blk->ranrec % 4), 0);  /* byte seek */
-	pop	de
-	pop	de
-	pop	de
-
-	ld	h,0
-	ld	l,(iy+fcbdesc)
-	push	hl
-	ldw	hl,(iy+fcbran)
-	srl	h
-	rr	l		; HL / 2
-	srl	h
-	rr	l		; HL / 4
-	push	hl
-	push	3
-	call	_seek
-;    seek(blk->desc,     blk->ranrec / 4 , 3);  /* block seek (512byte) */
-	pop	de
-	pop	de
-	pop	de
-	pop	hl		; restore HL
-	ret
-  endif ;UZI280
-
-  if RSX280
 ;
 ; record seek (128 byte sector) for read/write random
 ;
@@ -1371,7 +1643,7 @@ rseek:	push	hl		; save HL
 	push	bc
 
 	ld	h,0
-	ld	l,(iy+fcbdesc)	; fetch the LUN
+	ld	l,(iy+fcblun)	; fetch the LUN
 	; point IX to the RSX280 file storage region
 	call	checklun
 	jr	nc,sk_err	; invalid LUN
@@ -1395,7 +1667,7 @@ rs_3:	push	hl
 	; and load into 32-bit byte position
 	; in the DEBC registers
 
-	multuw	hl,128		; Multiply returns DEHL
+	multuw	hl,128		; multiply returns DEHL
 	ld	b,h		;  but fseek needs DEBC
 	ld	c,l
 	call	FSEEK
@@ -1410,25 +1682,9 @@ rs_2:	pop	bc
 	pop	hl		; restore HL
 	ret
 
-  endif ;RSX280
-
 ;*******************************************************************
 ; Utility routines
-
-  if UZI280
-; convert an upper case letter in register A to lower case.
-LCASE:
-	cp	'A'
-	ret	c
-	cp	'Z'+1
-	ret	nc
-	add	a,32
-	ret
-
-  endif ;UZI280
-
-  if RSX280
-
+;
 ; Convert char in A to uppercase
 UCASE:	cp	'a'
 	ret	c
@@ -1438,9 +1694,12 @@ UCASE:	cp	'a'
 	ret
 
 ; convert illegal RSX280 filename character to a '-'.
-; (only A..Z and 0..9 are allowed).
+; (only A..Z and 0..9 are allowed), and a wildcard '?'
+; to a '%'.
 chmap:
 	and	07Fh		; no parity, 7-bit only
+	cp	'?'
+	jr	z,chwild
 	cp	'0'
 	jr	c,chill
 	cp	'9'+1
@@ -1455,7 +1714,9 @@ chmap:
 	jr	nc,chill
 	sub	a,32		; 'a'-'z' is uppercased
 	ret
-chill:	ld	a,'-'		; Illegal is an '-'
+chill:	ld	a,'-'		; illegal is an '-'
+	ret
+chwild:	ld	a,'%'		; wildcard
 	ret
 
 ; Get next non-blank char.
@@ -1472,20 +1733,23 @@ getnb:	ld	a,(hl)
 	inc	hl
 	jr	getnb
 
-  endif ;RSX280
-
 ; Copy NUL terminated string pointed to by HL to DE
 ;
 ; Pointers are advanced to allow concatenation.
-; The terminating NUL is copied.
+; The terminating NUL is copied. Spaces are skipped.
 strcpy:
 s_lo:	ld	a,(hl)
+	cp	' '
+	jr	z,s_sp
 	ld	(de),a
 	or	a
 	ret	z		; end of string
 	inc	hl
 	inc	de
 	jr	s_lo
+s_sp:	xor	a		; space means end too
+	ld	(de),a
+	ret
 
 ; return length of NUL terminated string pointed to by HL in A
 strlen:
@@ -1504,30 +1768,16 @@ sl_12:	ld	a,c
 
 ; return number of available input chars in HL
 char_avail:
-  if UZI280
-	push	stdin
-	push	TIOCSETN
-	push	char
-	call	_ioctl
-;	ioctl(0, TIOCSETN, &char);
-	pop	de
-	pop	de
-	pop	de
-	ld	hl,(char)
-	ret
-  endif ;UZI280
-
-  if RSX280
 	ld	hl,0
 	push	de
-	ld	e,TIEFN
-	sc	.RDEF		; Read event-flag
+	ld	e,EFN_TI
+	sc	.RDEF		; read event-flag
 	pop	de
-	or	a		; Not set, nothing in buffer
+	or	a		; not set, nothing in buffer
 	ret	z
 
-	call	$TTGST		; Is there any char in queue?
-	ret	z		; No, return 0 in HL and carry set
+	call	$TTGST		; is there any char in queue?
+	ret	z		; no, return 0 in HL and carry set
 	ld	hl,(TTQ)	; TQ.IP in L, TQ.OP in H
 	ld	a,l
 	cp	h		; if TQ.OP > TQ.IP the ring
@@ -1537,80 +1787,19 @@ ca_1:	sub	h
 	ld	h,0
 	ld	l,a		; return count and carry clear
 	ret
-  endif ;RSX280
-
-ret_0:
-	ld	hl,0
-	ret
-ret_1:
-	ld	hl,1
-	ret
 
 ; read one character from stdin
 readchar:
-  if UZI280
-	push	stdin
-	push	char
-	push	1
-	call	_read
-;	read(0,&char,1);
-	pop	de
-	pop	de
-	pop	de
-  endif ;UZI280
-
-  if RSX280
 	call	$TTGC		; get a character
 	ld	(char),a
-  endif ;RSX280
 	ret
 
-; write one char to stdout
+; write one char from A to stdout
 writechar:
-  if UZI280
-	push	stdout
-	push	char
-	push	1
-	call	_write
-;	write(1,&char,1);
-	pop	de
-	pop	de
-	pop	de
-  endif ;UZI280
-
-  if RSX280
-	ld	a,(compcol)	; Check output flag
-	or	a		; If it is non-zero, output nothing
-	jr	nz,outchr1
-
-	ld	a,(char)	; Output the character
-	call	$TTOUT
-
-outchr1:
-	push	hl		; Update cursor position
-	ld	hl,column
-	cp	RUBOUT		; Rubouts don't do anything
-	jr	z,wc_ret
-	inc	(hl)		; Bump cursor
-	cp	' '
-	jr	nc,wc_ret	; Printing character
-	dec	(hl)		; Backup cursor
-	ld	a,(hl)		; Is it at start of line?
-	or	a
-	jr	z,wc_ret	; Yes, ignore it
-	ld	a,(char)
-	cp	BS		; Is it a backspace?
-	jr	nz,wc_2
-	dec	(hl)		; Yes, backup pointer by 1
-	jr	wc_ret
-wc_2:	cp	LF		; Is it a linefeed?
-	jr	nz,wc_ret
-	ld	(hl),0		; reset cursor to start of line
-wc_ret:	pop	hl
-	ret
-
-  endif ;RSX280
-
+	push	hl		; don't change HL
+	ld	c,a
+	call	conout		; output keeping track of cursor
+	pop	hl
 	ret
 
 ; read 128 bytes
@@ -1620,7 +1809,7 @@ wc_ret:	pop	hl
 ; Also Carry flag is set on error.
 read128:
 	ld	h,0
-	ld	l,(iy+fcbdesc)	; LUN in HL
+	ld	l,(iy+fcblun)	; LUN in HL
 	push	hl
 	push	(dmaadr)
 	push	128
@@ -1632,9 +1821,11 @@ read128:
 	ret
 
 ; write 128 bytes
+;
+; Returns bytes written in BC
 write128:
 	ld	h,0
-	ld	l,(iy+fcbdesc)
+	ld	l,(iy+fcblun)
 	push	hl
 	push	(dmaadr)
 	push	128
@@ -1651,22 +1842,11 @@ write128:
 ; main(argc, argv)
 
 main::
-  if UZI280
-	ld	hl,4
-	add	hl,sp
-	ld	(environ),hl	; save pointer to environ
-	pop	hl		; get argv into HL
-	pop	de		; get argc into DE
-  endif
-
-  if RSX280
-
-	; We're running under RSX280
-
 	ld	sp,tmpstk	; switch to local stack
 	xor	a
 	ld	(ttlc),a	; force input to uppercase
-
+	ld	(diropn),a	; directory not open
+	ld	(idxopn),a	; INDEXF.SYS not open
 	ld	hl,luntb	; clear LUN table of
 	ld	b,luntbsz	;  open files (all files
 init_0:	ld	(hl),a		;  are closed)
@@ -1680,8 +1860,8 @@ init_0:	ld	(hl),a		;  are closed)
 
 	ld	de,'TI'
 	ld	c,0
-	ld	b,LUNTI
-	SC	.ALUN		; assign TI: to LUNTI
+	ld	b,LUN_TI
+	SC	.ALUN		; assign TI: to LUN_TI
 	call	ATTACH		; attach with ASTs
 	call	TTCLR		; clear output buffer
 
@@ -1691,12 +1871,12 @@ init_0:	ld	(hl),a		;  are closed)
 	call	$MSGHL
 reentry:
 	call	$FLINP		; flush input buffer
-	call	$PRINT		; output prompt
+	call	$PRINT	; output prompt
 	defb	CR,LF,'X>',0
 
-	ld	a,3		; Cursor is at column 3
+	ld	a,2		; cursor position
 	ld	(column),a
-	xor	a		; Reset flag to allow console echo
+	xor	a		; reset flag to allow console echo
 	ld	(compcol),a
 
 	ld	hl,ttibuf	; point HL to input buffer text
@@ -1708,9 +1888,9 @@ reentry:
 	jr	z,reentry	; none
 
 	inc	hl
-	ld	a,(hl)		; Look for Ctrl-Z
+	ld	a,(hl)		; look for Ctrl-Z
 	cp	CTRLZ
-	jp	z,$EXIT		; Yes, exit
+	jp	z,$EXIT		; yes, exit
 
 	call	getnb		; skip white-space
 	jr	z,reentry	; Z means there was nothing
@@ -1719,7 +1899,7 @@ reentry:
 
 	; HL points to the first non-blank character
 	ld	ix,p_argv	; IX -> first of the argv pointers
-	call	getargs		; Split line into argv elements
+	call	getargs		; split line into argv elements
 	ld	(argc),hl	; save argc
 
 	ld	hl,(p_argv)	; pointer to argv[0]
@@ -1728,7 +1908,7 @@ reentry:
 	ld	hl,DOTCOM
 	call	strcpy		; add .COM file type
 
-	push	COMFCB		; Open the COM file
+	push	COMFCB		; open the COM file
 	push	flag_r
 	call	_open
 	pop	de		; clean-up stack
@@ -1749,13 +1929,12 @@ arg_5:				; HL contains the LUN of opened file
 	push	hl		; LUN to stack
 	push	tpa		; TPA address to stack
 ldcom1:	push	128		; number of bytes to read at a time
-	call	_read		; Read sector into TPA
-	jr	c,ldcom2	; An error? (most likely end of file)
+	call	_read		; read sector into TPA
+	jr	c,ldcom2	; an error? (most likely end of file)
 	; number of bytes read returned in BC
 	ld	h,b
 	ld	l,c
-;	cpw	hl,0		; nothing read?
-	ld	a,h
+	ld	a,h		; nothing read?
 	or	l
 	jr	z,ldcom2
 	pop	de		; remove nchars from stack
@@ -1766,36 +1945,36 @@ ldcom1:	push	128		; number of bytes to read at a time
 	push	hl
 	jr	ldcom1		; next sector
 
-ldcom3:
+ldcom3:	; LUN still on stack
 	call	_close
 	pop	de
 	call	$PRINT
 	defb	'BAD LOAD',0
-	jr	notfnd		; Error
+	jr	notfnd		; error
 
 ldcom2:	pop	de		; clean up stack (byte count)
 	pop	(topcom)	; save top load address
 	call	_close		; (LUN is still on the stack)
 	pop	de		; discard it
 	; .COM file loaded
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%CPM-I-Program loaded 0100-',0
+    if 0;DEBUG
+	call	$PSTR
+	defb	'CPM-I-Program loaded 0100-',0
 	ld	hl,(topcom)
 	call	$HLHEX
 	call	$CRLF
       if 0
-	call	dumptpa		; Let's see a dump of the TPA
+	call	dumptpa		; let's see a dump of the TPA
       endif
     endif ;DEBUG
 
 	ld	hl,(topcom)
-	cpw	hl,tpa		; Anything loaded?
-	jp	z,notfnd	; No - treat as an error
+	cpw	hl,tpa		; anything loaded?
+	jp	z,notfnd	; no - treat as an error
 
 	ld	hl,p_argv
 	ld	de,(argc)
-  endif
+
 	;Now we assemble the command parameters at 0080h
 	;argv in HL
 	;argc in DE
@@ -1848,18 +2027,18 @@ m_2:
 	; File Control Block at 005Ch
 
 	ld	hl,cpmfcb1	; clear the FCB area
-	ld	b,36
+	ld	b,fcblen
 m_0:	ld	(hl),0
 	inc	hl
 	djnz	m_0
 
 ; actually this is always done - even for no parameters
 ;	ld	a,(argc)	; restore argc
-;	cp	1		; No parameters
+;	cp	1		; no parameters
 ;	jr	z,parm_0
-;	cp	2		; One parameter?
-;	jr	z,parm_1	; Yes
-	ld	ix,(p_argv+2*2)	; Point IX to p_argv[2]
+;	cp	2		; one parameter?
+;	jr	z,parm_1	; yes
+	ld	ix,(p_argv+2*2)	; point IX to p_argv[2]
 	ld	hl,cpmfcb2	; point HL to second FCB area
 	call	fillfcb		; copy to FCB
 parm_1:
@@ -1870,16 +2049,19 @@ parm_0:
 
 	; make BDOS and BIOS entry points
 	ld	a,0c3h
-	ld	(0000),a
-	ld	(0005),a
+	ld	(cpmwarm),a	; warm boot JP
+	ld	(cpmentry),a	; BDOS entry JP
 	ld	hl,warmboot
-	ld	(0001),hl
+	ld	(cpmwarm+1),hl
 	ld	hl,entry
-	ld	(0006),hl
+	ld	(cpmentry+1),hl
+	ld	hl,0
+	ld	(cpmiob),hl	; IOBYTE and current drive
+				;  both zero (only drive A:)
 
-  if 0 ;DEBUG
+  if 0;DEBUG
 	push	hl
-	call	dumppg0		; Show page zero to see it's all OK
+	call	dumppg0		; show page zero to see it's all OK
 	pop	hl
   endif
 
@@ -1891,32 +2073,14 @@ parm_0:
 
 	ld	sp,bdos		; set stack pointer to base of BDOS
 
-  if UZI280
-
-FIRST3::
-; For UZI, this program is already patched to contain the program
-; (with the first three bytes patched)
-;
-; original instruction of patched program at address 100-103h
-; and jump into CP/M transient program just loaded
-;	jp	04b0H	; zde13
-	jp	0103h	; Hitech C
-;	ex	de,hl
-;	jp	0162h	; slr asm
-;	jp	20e2h	; turbo pascal
-;	jp	20c4h	; multiplan
-;	jp	5d71h	; mbasic
-  endif ;UZI280
-
-  if RSX280
 	; Program loaded - off we go!
-	ld	hl,done		; Push a return address
+	ld	hl,done		; push a return address
 	push	hl		; to return to the CPM X> prompt
-	jp	tpa		; Start transient program
+	jp	tpa		; start transient program
 
 ;*******************************************************************
 ; Detach console terminal
-DETACH: ld	hl,IO.DET	; Change function code to detach
+DETACH: ld	hl,IO.DET	; change function code to detach
 	ld	(attqio+Q.FUNC),hl
 	; fall through
 
@@ -1941,14 +2105,14 @@ TTAST:	ex	(sp),hl		; fetch character from stack, save HL
 	ld	a,c
 	cp	03h		; ^C ?
 	jr	nz,ast1
-	ld	hl,CCFLG	; Check Ctrl-C flag
+	ld	hl,CCFLG	; check Ctrl-C flag
 	ld	a,(hl)
 	or	a
 	call	z,qinit		; clear input queue if yes
 	inc	hl
 	set	7,(hl)		; set ^C flag
 ast1:	call	qput		; store char in queue
-	ld	e,TIEFN
+	ld	e,EFN_TI
 	SC	.SETF		; set event flag
 	pop	ix
 	pop	bc
@@ -1996,10 +2160,10 @@ arg_1:	ld	(hl),0		; replace the space with a NUL
 	ldw	(ix+0),hl	; save next argv pointer
 	inc	c		; bump argc
 	ld	a,c
-	cp	9		; Only room for argv[0..9]
+	cp	9		; only room for argv[0..9]
 	jr	c,arg_0
 
-arg_1b:	ld	a,(hl)		; Look for CR
+arg_1b:	ld	a,(hl)		; look for CR
 	or	a
 	jr	z,arg_2
 	cp	CR
@@ -2013,9 +2177,9 @@ arg_2:	ld	ix,p_argv	; IX points to argv[0]
 	ld	d,0		; DE is argc
 	ld	e,c
 
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'<argv>',CR,LF,0
+  if 0;DEBUG
+	call	$PSTR
+	defb	'argv',CR,LF,0
 	ldw	hl,(ix+0)
 arg_3:
 	call	$PRINT
@@ -2031,13 +2195,13 @@ arg_3:
 	inc	ix
 	jr	arg_3
 arg_4:
-	call	$PRINT
-	defb	CR,LF,'argc = ',0
+	call	$PSTR
+	defb	'argc=',0
 	ld	h,d
 	ld	l,e
 	call	$HLHEX
 	call	$CRLF
-    endif ;DEBUG
+  endif ;DEBUG
 
 	ex	de,hl		; return argc value
 	ret
@@ -2064,12 +2228,12 @@ $TTGC:	call	$FLUSH		; send pending output to terminal
 	push	hl
 	push	de
 	push	bc
-ci1:	ld	e,TIEFN
+ci1:	ld	e,EFN_TI
 	SC	.CLEF		; clear event flag
 	ld	ix,TTQ
 	call	qget		; get char from input queue
 	jr	nc,ci2
-	ld	e,TIEFN		; if none ready
+	ld	e,EFN_TI	; if none ready
 ;;	SC	.WTSE		;  then wait
 	SC	.STSE
 	jr	ci1
@@ -2217,249 +2381,19 @@ TTCLR:	push	hl
 
 ;*******************************************************************
 ;
-; These routines are for the emulator.  They do not
-; update the cursor position like their CP/M counterparts
-;
-;Newline
-$CRLF:	call	$PRINT
-	defb	CR,LF,0
-	ret
-
-;Print in-line message terminated by a NUL
-$PRINT:
-	ex	(sp),hl
-	call	$MSGHL
-	ex	(sp),hl
-	ret
-
-;Print message pointed to by HL terminated by a NUL
-$MSGHL:	ld	a,(hl)
-	inc	hl
-	or	a
-	ret	z
-	call	$TTOUT
-	jr	$MSGHL
-
-    if DEBUG
-
-$HLHEX:	ld	a,h
-	call	$AHEX
-	ld	a,l
-$AHEX:	push	af
-	rrca
-	rrca
-	rrca
-	rrca
-	call	$CHEX
-	pop	af
-$CHEX:	and	0Fh
-	add	a,90h
-	daa
-	adc	a,40h
-	daa
-	jp	$TTOUT
-
-	if 0
-dumpfdb:
-	call	$PRINT
-	defb	CR,LF,'<fdb> at ',0
-	push	hl
-	call	$HLHEX
-	call	$CRLF
-	push	bc
-	ld	b,FINFSZ
-	jr	du_f0
-dumpfcb:
-	call	$PRINT
-	defb	CR,LF,'<fcb> at ',0
-	push	iy		; CP/M FCB pointer is in IY
-	ex	(sp),hl		; move it to HL and save old HL
-	call	$HLHEX
-	call	$CRLF
-	push	bc
-	ld	b,36
-du_f0:	ld	a,(hl)
-	call	$AHEX
-	inc	hl
-	ld	a,b
-	and	0Fh
-	call	z,$CRLF
-	djnz	du_f0
-	call	$CRLF
-	pop	bc
-	pop	hl
-	ret
-      endif
-
-      if 0
-dumppg0:
-	call	$PRINT
-	defb	CR,LF,'<page0>',0
-	ld	hl,0
-du_p0:	ld	a,l
-	and	0Fh
-	jr	nz,du_p1
-	call	$CRLF
-	call	$HLHEX
-	call	$PRINT
-	defb	': ',0
-du_p1:	ld	a,(hl)
-	call	$AHEX
-	call	$PRINT
-	defb	' ',0
-	inc	hl
-	cpw	hl,0100h
-	jr	nz,du_p0
-	jp	$CRLF
-      endif
-
-      if 0
-dumptpa:
-	call	$PRINT
-	defb	CR,LF,'<tpa>',0
-	ld	hl,tpa
-du_t0:	ld	a,l
-	and	0Fh
-	jr	nz,du_t1
-	call	$CRLF
-	call	$HLHEX
-	call	$PRINT
-	defb	': ',0
-du_t1:	ld	a,(hl)
-	call	$AHEX
-	call	$PRINT
-	defb	' ',0
-	inc	hl
-	cpw	hl,(topcom)
-	jr	nz,du_t0
-	jp	$CRLF
-      endif
-
-      if 0
-; Dump out the FSR and FDB in hex.  IX points to FSR
-;
-dumpfsr:
-	push	hl
-	push	bc
-	call	$PRINT
-	defb	CR,LF,'<FDB>',CR,LF,0
-	ldw	hl,(ix+FC.FDB)
-	call	$HLHEX
-	call	$PRINT
-	defb	': ',0
-	ld	b,FINFSZ
-du_0:   ld	a,(hl)
-	call	$AHEX
-	ld	a,' '
-	call	$TTOUT
-	inc	hl
-	ld	a,b
-	and	0Fh
-	jr	nz,du_1
-	call	$CRLF
-	call	$HLHEX
-	call	$PRINT
-	defb	': ',0
-du_1:
-	djnz	du_0
-	call	$PRINT
-	defb	CR,LF,'<FSR>',CR,LF,0
-	push	ix
-	pop	hl
-	call	$HLHEX
-	call	$PRINT
-	defb	': ',0
-	ld	b,FCSIZ
-du_2:	ld	a,(hl)
-	call	$AHEX
-	ld	a,' '
-	call	$TTOUT
-	inc	hl
-	djnz	du_2
-	call	$CRLF
-	pop	bc
-	pop	hl
-	ret
-      endif ;0
-
-    endif ;DEBUG
-
-;*******************************************************************
-;
 ; Exit program and return to RSX280
-$EXITC:	call	$CRLF
-$EXIT:	call	$FLINP		; flush input buffer
-	ld	c,LUNTI
+$EXIT:	call	close_all	; close all files
+	call	close_dir
+
+	call	$FLINP		; flush input buffer
+	ld	c,LUN_TI
 	call	DETACH
-	ld	hl,EX.SUC	; Exit to monitor with success
+	ld	hl,EX.SUC	; exit to monitor with success
 	SC	.EXIT
-	halt			; We should never get here
-
-  endif ;RSX280
+	halt			; we should never get here
 
 ;*******************************************************************
-  if UZI280
 ;
-;   Use system calls for UZI280 (unix edition 7)
-;
-; _exit(int val)
-_exit:
-	SC 0
-	jr	DISP
-; open(char *name,int flag)
-_open:
-	SC 1
-	jr	DISP
-; close(int index)
-_close:
-	SC 2
-	jr	DISP
-; creat(char *name,int mode)
-_creat:
-	SC 3
-	jr	DISP
-; unlink(char *path)
-_unlink:
-	SC 6
-	jr	DISP
-; read(int d, char *buf,unsigned nbytes)
-_read:
-	SC 7
-	jr	DISP
-; write(int d, char *buf,unsigned nbytes)
-_write:
-	SC 8
-	jr	DISP
-; 16 bit seek.
-; seek(int file,offset,flag)
-_seek:
-	SC 9
-	jr	DISP
-; execve(char *name,*argv[],*envp[])
-_execve:
-	SC 23
-	jr	DISP
-; wait(int *statloc)
-_wait:
-	SC 24
-	jr	DISP
-; ioctl(int fd,request,char *data
-_ioctl:
-	SC 29
-	jr	DISP
-; fork()
-_fork:
-	SC 32
-DISP:	ret	nc		; no error
-	ld	(errno),hl
-	ld	hl,-1
-	ret
-
-  endif ;UZI280
-
-;*******************************************************************
-  if RSX280
-
 ; int open(char *name,int flag)
 ;
 ; Open a file with the given "name" and access mode flag
@@ -2470,8 +2404,8 @@ DISP:	ret	nc		; no error
 ;
 _open:
     if 0;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%OPEN-I-File "',0
+	call	$PSTR
+	defb	'OPEN-I-File "',0
 	ldw	hl,(sp+4)
 	call	$MSGHL
 	call	$PRINT
@@ -2491,21 +2425,21 @@ op_0:	bit	0,(hl)
 	jr	c,op_0
 
     if DEBUG
-	call	$PRINT
-	defb	CR,LF,'%OPEN-F-No free LUN',0
+	call	$PSTR
+	defb	'OPEN-F-No free LUN',0
     endif ;DEBUG
-	ld	a,E.NOBUF	; Use "Out of disk buffers" error
+	ld	a,E.NOBUF	; use "Out of disk buffers" error
 	jp	op_err
 
-op_1:	ld	(opnltbe),hl	; Save in case open fails
-	set	0,(hl)		; Mark this lun as unavailable
+op_1:	ld	(opnltbe),hl	; save in case open fails
+	set	0,(hl)		; mark this LUN as unavailable
 	; LUN is in BC
-	ld	(opnlun),bc	; Save it
+	ld	(opnlun),bc	; save it
 
-    if 0 ;DEBUG
+    if 0;DEBUG
 	push	bc
-	call	$PRINT
-	defb	CR,LF,'%OPEN-I-Using LUN ',0
+	call	$PSTR
+	defb	'OPEN-I-Using LUN ',0
 	ld	h,b
 	ld	l,c
 	call	$HLHEX
@@ -2513,7 +2447,7 @@ op_1:	ld	(opnltbe),hl	; Save in case open fails
     endif ;DEBUG
 
 	ld	de,FCSIZ+512	; size of FSR and buffer
-	ld	hl,fsr_1	; Which file storage region to use?
+	ld	hl,fsr_1	; which file storage region to use?
 
 op_2:	dec	bc		; index by LUN-1
 	ld	a,c
@@ -2533,12 +2467,12 @@ op_3:	push	hl
 	ldw	ix,(ix+FC.FDB)  ; point IX to FCB
 	call	PFN		; parse name into fcb
 	pop	ix
-	jr	nc,op_4		; It parsed correctly
+	jr	nc,op_4		; it parsed correctly
 
-    if DEBUG
+    if 0;DEBUG
 	push	af
-	call	$PRINT
-	defb	CR,LF,'%OPEN-F-Parse failed',0
+	call	$PSTR
+	defb	'OPEN-F-Parse failed',0
 	pop	af
     endif ;DEBUG
 	jr	op_err		; illegal filename
@@ -2548,15 +2482,15 @@ op_4:	ldw	hl,(sp+2)	; is it an open for Read?
 	bit	FM.RD,a		;  (or Read/Write)
 	jr	nz,op_5		; yes, open existing file
 
-	and	NOT (1 SHL FM.WR) ; Are there other mode bits (other than WR)
+	and	NOT (1 SHL FM.WR) ; are there other mode bits (other than WR)
 	jr	z,op_creat
-	ld	a,E.BADOP	; We don't support them for now.
+	ld	a,E.BADOP	; we don't support them for now.
 	jr	op_err
 
 op_creat:
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%OPEN-I-Create file',0
+    if 0;DEBUG
+	call	$PSTR
+	defb	'OPEN-I-Create file',0
     endif ;DEBUG
 
 	xor	a		; non-contiguous (A=0)
@@ -2568,17 +2502,17 @@ op_creat:
 	jr	op_6
 
 op_5:
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%OPEN-I-Existing file',0
+    if 0;DEBUG
+	call	$PSTR
+	defb	'OPEN-I-Existing file',0
     endif ;DEBUG
 
 	call	FOPEN		; open existing file
 op_6:	jp	c,op_err
 
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%OPEN-I-File opened',CR,LF,0
+    if 0;DEBUG
+	call	$PSTR
+	defb	'OPEN-I-File opened',CR,LF,0
     endif ;DEBUG
 
 	ld	hl,(opnlun)	; return the LUN of opened file
@@ -2588,9 +2522,9 @@ op_6:	jp	c,op_err
 op_err:	ld	l,a		; save RSX280 error in errno
 	ld	h,0
 	ld	(errno),hl
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%OPEN-E-Error=',0
+    if 0;DEBUG
+	call	$PSTR
+	defb	'OPEN-E-Error=',0
 	call	$HLHEX
     endif ;DEBUG
 	ld	hl,(opnltbe)	; open failed - reset LUN
@@ -2605,8 +2539,8 @@ op_err:	ld	l,a		; save RSX280 error in errno
 ;
 _close:
     if 0;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%CLOSE-I-LUN=',0
+	call	$PSTR
+	defb	'CLOSE-I-LUN=',0
 	ldw	hl,(sp+2)
 	call	$HLHEX
 	call	$CRLF
@@ -2620,7 +2554,7 @@ _close:
 	ld	b,h
 	ld	c,l
 	ld	de,FCSIZ+512
-	ld	hl,fsr_1	; Which file storage region to use?
+	ld	hl,fsr_1	; which file storage region to use?
 
 cl_2:	dec	bc		; index by LUN-1
 	ld	a,c
@@ -2639,19 +2573,19 @@ cl_3:	push	hl
 	dec	de
 	ld	hl,luntb
 	add	hl,de
-	res	0,(hl)		; Mark this LUN as available
+	res	0,(hl)		; mark this LUN as available
 
 	pop	af
-	ret	nc		; No errors
+	ret	nc		; no errors
 
-	ld	l,a		; Error code from FCLOSE
+	ld	l,a		; error code from FCLOSE
 	ld	h,0
 
 cl_err:
-    if DEBUG
+    if 0;DEBUG
 	push	af
-	call	$PRINT
-	defb	CR,LF,'%CLOSE-E-Error',0
+	call	$PSTR
+	defb	'CLOSE-E-Error',0
 	pop	af
     endif ;DEBUG
 
@@ -2673,23 +2607,19 @@ lun_err:
 	ld	hl,E.INV	; LUN > maximum allowed
 	ret
 
-; creat(char *name,int mode)
+; creat(char *name)
 _creat:
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%CREAT-I-file "',0
-	ldw	hl,(sp+4)
-	call	$MSGHL
-	call	$PRINT
-	defb	'" prot ',0
+    if 0;DEBUG
+	call	$PSTR
+	defb	'CREAT-I-file "',0
 	ldw	hl,(sp+2)
-	call	$HLHEX
+	call	$MSGHL
     endif ;DEBUG
 
-	; We'll ignore the protection mask and just call _open
-	ldw	hl,(sp+4)
+	; just call _open
+	ldw	hl,(sp+2)
 	push	hl
-	push	flag_w		; Open for Write will create
+	push	flag_w		; open for Write will create
 	call	_open		;  a new file (a new version)
 	pop	de
 	pop	de
@@ -2697,9 +2627,9 @@ _creat:
 
 ; unlink(char *path)
 _unlink:
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%UNLINK-I-Delete file "',0
+    if 0;DEBUG
+	call	$PSTR
+	defb	'UNLINK-I-Delete file "',0
 	ldw	hl,(sp+2)
 	call	$MSGHL
 	call	$PRINT
@@ -2707,7 +2637,7 @@ _unlink:
 	scf
     endif ;DEBUG
 
-	ldw	hl,(sp+2)	; Copy filename
+	ldw	hl,(sp+2)	; copy filename
 	ld	de,delnam
 	call	strcpy
 ;**TODO - maybe lookup the highest version - or delete all versions?
@@ -2725,12 +2655,12 @@ _unlink:
 	ld	de,(FDBDEL+F.DEV)
 	ld	a,(FDBDEL+F.UNIT)
 	ld	c,a
-	ld	b,LUNSY
+	ld	b,LUN_SY
 	sc	.ALUN		; assign the LUN
 	jr	c,ul_err
 
 	ld	hl,FDBDEL
-	ld	c,LUNSY
+	ld	c,LUN_SY
 	call	FDEL		; do the delete
 	jr	c,ul_err
 	ld	hl,0
@@ -2747,8 +2677,8 @@ ul_err:	ld	h,0
 _read:
 
     if 0;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%READ-I-LUN=',0
+	call	$PSTR
+	defb	'READ-I-LUN=',0
 	ldw	hl,(sp+6)
 	call	$HLHEX
 	call	$PRINT
@@ -2768,7 +2698,7 @@ _read:
 rd_0:	; read from a file - buffer ptr is in IX
         ld	b,h		; LUN -> BC
 	ld	c,l
-	ld	de,FCSIZ+512	; Select FSR for this LUN
+	ld	de,FCSIZ+512	; select FSR for this LUN
 	ld	hl,fsr_1
 
 rd_2:	dec	bc
@@ -2801,8 +2731,8 @@ rd_3:	push	ix		; juggle registers
 _write:
 
     if 0;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%WRITE-I-LUN=',0
+	call	$PSTR
+	defb	'WRITE-I-LUN=',0
 	ldw	hl,(sp+6)
 	call	$HLHEX
 	call	$PRINT
@@ -2819,11 +2749,11 @@ _write:
 	ldw	ix,(sp+4)	; point to buffer
 	ldw	hl,(sp+6)	; d
 	call	checklun
-	jr	nc,wr_err	; Invalid LUN
+	jr	nc,wr_err	; invalid LUN
 
         ld	b,h		; LUN -> BC
 	ld	c,l
-	ld	de,FCSIZ+512	; Select FSR for this LUN
+	ld	de,FCSIZ+512	; select FSR for this LUN
 	ld	hl,fsr_1
 
 wr_2:	dec	bc
@@ -2844,11 +2774,11 @@ wr_3:	push	ix		; juggle registers
 	call	FWRITE
 	; number of bytes written is returned in BC, CY set on error
 
-    if 0 ;DEBUG
+    if 0;DEBUG
 	push	af
 	push	bc
-	call	$PRINT
-	defb	CR,LF,'%WRITE-I-Written=',0
+	call	$PSTR
+	defb	'WRITE-I-Written=',0
 	pop	hl
 	push	hl
 	call	$HLHEX
@@ -2856,8 +2786,7 @@ wr_3:	push	ix		; juggle registers
 	pop	af
     endif ;DEBUG
 
-	ld	h,b		; return number of bytes written in HL
-	ld	l,c
+	ld	hl,0		; assume no errors
 	ret	nc		; done
 	ld	h,0
 	ld	l,a
@@ -2865,30 +2794,6 @@ wr_err:	ld	(errno),hl	; put error code into errno
 	ld	hl,-1
 	scf
 	ret
-
-  endif ;RSX280
-
-;*******************************************************************
-;
-; Stack
-  if RSX280
-
-	cseg
-
-    if (($-tpa) and 1)	; Even address boundary
-	defs	1
-    endif
-
-	defs	256
-  endif
-  if UZI280
-
-	dseg
-
-	defs	30
-  endif
-
-tmpstk:
 
 ;*******************************************************************
 ;
@@ -2910,25 +2815,25 @@ bdostable:
 	defw	console_status	; 11 - get console status
 	defw	return_version	; 12 - get version
 	defw	reset_dma	; 13 - reset disk system
-	defw	ret_0		; 14 - select disk
+	defw	ret_hl_0	; 14 - select disk
 	defw	openfile 	; 15 - open file
 	defw	closefile 	; 16 - close file
-	defw	no_good		; 17 - search for first file
-	defw	no_good		; 18 - search for next file
+	defw	search_first	; 17 - search for first file
+	defw	search_next	; 18 - search for next file
 	defw	delete		; 19 - delete file
 	defw	readfile	; 20 - read next record
 	defw	writefile	; 21 - write next record
 	defw	makefile	; 22 - create file
 	defw	rename		; 23 - rename file
-	defw	ret_1		; 24 - get login vector
-	defw	ret_0		; 25 - get current disk
+	defw	ret_hl_1	; 24 - get login vector
+	defw	ret_hl_0	; 25 - get current disk
 	defw	set_dma		; 26 - set disk DMA address
 	defw	no_good		; 27 - get allocation vector
 	defw	no_good		; 28 - write protect disk
-	defw	no_good		; 29 - get read-only vector
+	defw	ret_hl_0	; 29 - get read-only vector
 	defw	no_good		; 30 - set file attributes
 	defw	no_good		; 31 - get addr(dpb params)
-	defw	ret_0		; 32 - set/get user code
+	defw	ret_hl_0	; 32 - set/get user code
 	defw	readrandom	; 33 - read random
 	defw	writerandom	; 34 - write random
 	defw	no_good		; 35 - compute file size
@@ -2941,12 +2846,16 @@ bdostable:
 
 maxbdosfn equ	(($-bdostable)/2)-1 ; should be 40 (028h)
 
-	page
 ;
 ; First try of a direct bios call implementation
 ;
 	cseg
 
+tobios	equ	(cpmbios-cpmtpa)-($-tpa)
+tobios	equ	(cpmbios-cpmtpa)-($-tpa)
+
+tobios	equ	(cpmbios-cpmtpa)-($-tpa)
+tobios	equ	(cpmbios-cpmtpa)-($-tpa)
 tobios	equ	(cpmbios-cpmtpa)-($-tpa)
   if tobios and 8000h	; negative (sign bit on)
     if2
@@ -2957,9 +2866,8 @@ tobios	equ	(cpmbios-cpmtpa)-($-tpa)
   endif
 
 ;*******************************************************************
+;
 ; The BIOS jump table.
-; Routines are located above to minimise
-; what would otherwise be wasted memory space.
 
 bios::	jp	done		;0 Cold Boot
 warmboot:
@@ -2971,7 +2879,7 @@ warmboot:
 	jp	dummy		;6 Punch Output
 	jp	dummy		;7 Reader Input
 	jp	dummy		;8 Home
-	jp	dummy		;9 Select Disk
+	jp	_seldsk		;9 Select Disk
 	jp	dummy		;10 Set Track
 	jp	dummy		;11 Set Sector
 	jp	dummy		;12 Set DMA Transfer Address
@@ -2985,14 +2893,6 @@ warmboot:
 ; BIOS console input
 _conin:
 	call	readchar
-  if UZI280
-;	if (arg == '\n')
-;	    arg = '\r';
-	ld	a,(char)
-	cp	LF		;'\n'
-	ret	nz
-	ld	a,CR		;'\r'
-  endif ;UZI280
 	ret
 
 ; BIOS console output
@@ -3011,93 +2911,87 @@ _conist:
 	ld	a,0ffh
 	ret
 
+; BIOS select disk
+_seldsk:
+  if DEBUG
+	push	bc
+	call	$PSTR
+	defb	'SELDSK',0
+	pop	bc
+  endif ;DEBUG
+
+	ld	hl,0		; assume error return value
+	ld	a,c		; only a single drive A:
+	or	a
+	ret	nz
+	ld	hl,dph
+	ret
+
 ; Dummy routine for unsupported BIOS calls
 dummy:
-  if UZI280
-; write(2,"Illegal BIOS call\n",18);
-	push	stderr
-	push	biosmsg
-	push	biosml		; length of message
-	call	_write
-	pop	de
-	pop	de
-	pop	de
-; 	fall through
-  endif ;UZI280
-
-  if RSX280
 	ld	hl,biosmsg
 	call	$MSGHL
-  endif ;RSX280
 
 ; end of program run
 
 done:
-  if UZI280
-	; UZI exits to command shell
-	ld	hl,(080h)	; HI-TECH C stores its exit value at 80h
-	push	hl
-	call	_exit
-  endif ;UZI280
-
-  if RSX280
-	;RSX prompts for next CP/M program
+	;Prompt for next CP/M program
 	ld	sp,tmpstk	; back to our stack
 
-    if 0 ;DEBUG
-	call	$PRINT
-	defb	CR,LF,'%CPM-I-Program exit',CR,LF,0
-    endif ;DEBUG
+  if 0;DEBUG
+	call	$PSTR
+	defb	'CPM-I-Program exit',CR,LF,0
+  endif ;DEBUG
 
-	; Close any open files
+	call	close_all
+;	call	close_dir
+
+	xor	a
+	ld	(ttlc),a	; uppercase enable
+	ldw	(CCFLG),0	; re-enable Ctrl-C processing
+	jp	reentry		; go and get next emulator command
+
+;*******************************************************************
+;
+; Close any open files
+close_all:
 	ld	hl,luntb
 	ld	de,1		; start with LUN 1
-do_1:	bit	0,(hl)		; is it open?
-	jr	z,do_2		; no
+cla_1:	bit	0,(hl)		; is it open?
+	jr	z,cla_2		; no
 	push	hl
 	push	de		; LUN
 	call	_close		; close it
 	pop	de
 	pop	hl
 	res	0,(hl)		; mark it as closed
-do_2:	inc	hl
+cla_2:	inc	hl
 	inc	de		; next LUN
 	ld	a,e
 	cp	luntbsz+1	; are we done ?
-	jr	c,do_1		; no
+	jr	c,cla_1		; no
+	ret
 
+close_dir:
+	ld	a,(diropn)	; close directory
+	or	a
+	jr	z,cla_3
+	ld	ix,fsrdir
+	call	FCLOSE
 	xor	a
-	ld	(ttlc),a	; Uppercase enable
-	ldw	(CCFLG),0	; Re-enable Ctrl-C processing
-	jp	reentry		; Go and get next emulator command
-  endif ; RSX280
+	ld	(diropn),a
+cla_3:	ld	a,(idxopn)	; close INDEXF.SYS
+	or	a
+	ret	z
+	ld	ix,fsridx
+	call	FCLOSE
+	xor	a
+	ld	(idxopn),a
+	ret
+
 
 ;*******************************************************************
 ;
-  if UZI280
-
-	dseg			; only UZI is using DSEG for now
-
-; additional search path for file open
-SRCHPATH:	defb	"/sys/lib/HiTech/",0
-;SRCHPATH:	defb	"/CPM/bin/",0
-
-; strings used for execve call
-shell:	defb	"/bin/sh",0
-shell1:	defb	"sh",0
-shell2:	defb	"-c",0
-
-argv:	defw	shell1		; "sh"
-	defw	shell2		; "-c"
-	defw	p_name		; "mv oldname newname"
-	defw	0		; end of argv
-
-u_name:	defs	16		; holds converted uzi file name
-p_name:	defs	40		; file name for path search and execve()
-environ:	defs	2
-
-  endif ;UZI280
-
 ; CP/M BDOS emulator variables
 
 biosmsg:
@@ -3105,18 +2999,324 @@ biosmsg:
 	defb	CR,LF,0
 biosml	equ	$-biosmsg-1
 
-oldstk:	defs	2
-arg:	defs	2
-call:	defs	2
-dmaadr:	defs	2
+oldstk:	defs	2		; saved stack pointer
+arg:	defs	2		; entry argument from DE
+func:	defs	2		; entry function code from C
+dmaadr:	defs	2		; current DMA address
 char:	defs	2
-errno:	defs	2
+errno:	defs	2		; error code
+lret:
+aret:	defs	2		; address value return result
+dirloc:	defs	1		; directory entry located
 
 ;*******************************************************************
+;
+; These routines are for the emulator.  They do not
+; update the cursor position like their CP/M counterparts
+;
+;Newline
+$CRLF:	call	$PRINT
+	defb	CR,LF,0
+	ret
 
-  if RSX280
+$PSTR:
+	call	$CRLF
+	ld	a,'%'
+	call	$TTOUT
 
-	cseg
+;Print in-line message terminated by a NUL
+$PRINT:
+	ex	(sp),hl
+	call	$MSGHL
+	ex	(sp),hl
+	ret
+
+;Print message pointed to by HL terminated by a NUL
+$MSGHL:	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	call	$TTOUT
+	jr	$MSGHL
+
+;*******************************************************************
+;
+; Debugging routines
+
+  if DEBUG
+
+; Print three spaces
+$SPACE3:
+	call	$SPACE
+	call	$SPACE
+
+;Print space
+$SPACE:	ld	a,' '
+	jp	$TTOUT
+
+;Print contents of HL in hexadecimal
+$HLHEX:	ld	a,h
+	call	$AHEX
+	ld	a,l
+
+;Print contents of A in hexadecimal
+$AHEX:	push	af
+	rrca
+	rrca
+	rrca
+	rrca
+	call	$CHEX
+	pop	af
+$CHEX:	and	0Fh
+	add	a,90h
+	daa
+	adc	a,40h
+	daa
+	jp	$TTOUT
+
+    if 1
+; Dump memory starting at address in HL for BC bytes
+$DUMPM:	push	hl		; save address and
+	push	bc		;  count on stack
+dm_0:	call	$CRLF
+	call	$HLHEX		; print address in hex
+	ld	a,':'
+	call	$TTOUT
+	call	$SPACE
+	ld	a,l
+	and	0Fh
+	jr	z,dm_1
+dm_7:	push	af		; space align
+	call	$SPACE3
+	pop	af
+	dec	a
+	jr	nz,dm_7
+dm_1:	ld	a,(hl)		; fetch next
+	call	$AHEX		;  and output it in hex
+	call	$SPACE
+	inc	hl
+	dec	bc
+	ld	a,l		; have we done 16?
+	and	0Fh
+	jr	z,dm_9		; yes
+dm_2:	ld	a,b		; have we finished?
+	or	c
+	jr	nz,dm_1		; not zero - keep going
+	ld	a,l
+dm_10:	and	0Fh		; space align
+	jr	z,dm_9
+	push	af
+	call	$SPACE3
+	pop	af
+	inc	a
+	jr	dm_10
+
+dm_9:	pop	bc
+	pop	hl		; go back 16
+	ld	a,l
+	and	0Fh
+	jr	z,dm_3
+dm_8:	push	af		; space align
+	call	$SPACE
+	pop	af
+	dec	a
+	jr	nz,dm_8
+dm_3:	ld	a,(hl)		; and output them in ASCII
+	and	7Fh
+	cp	7Fh
+	jr	z,dm_5
+	cp	' '
+	jr	nc,dm_4
+dm_5:	ld	a,'.'
+dm_4:	call	$TTOUT
+	inc	hl
+	dec	bc
+	ld	a,b
+	or	c
+	jr	z,dm_6
+	ld	a,l
+	and	0Fh
+	jr	nz,dm_3		; repeat until we're done
+	push	hl		; re-save pointer
+	push	bc
+	jr	dm_0
+
+dm_6:
+	jp	$CRLF
+    endif ;0
+
+    if 1
+dumpfdb:
+	push	bc
+	push	hl
+	call	$PSTR
+	defb	'fdb at ',0
+	call	$HLHEX
+	call	$CRLF
+	ld	bc,FINFSZ
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+;
+dumpfcb:
+	push	bc
+	call	$PSTR
+	defb	'fcb at ',0
+	push	iy		; CP/M FCB pointer is in IY
+	ex	(sp),hl		; move it to HL and save old HL
+	call	$HLHEX
+	call	$CRLF
+	ld	bc,fcblen
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+    endif
+
+    if 0
+dumppg0:
+	push	bc
+	push	hl
+	call	$PSTR
+	defb	'page0',0
+	ld	hl,0000h
+	ld	bc,100h
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+    endif
+
+    if 0
+dumptpa:
+	push	bc
+	push	hl
+	call	$PSTR
+	defb	'tpa',0
+	ld	bc,(topcom)
+	dec	b
+	ld	hl,tpa
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+    endif
+
+    if 0
+; Dump out the FSR and FDB in hex.  IX points to FSR
+;
+dumpfsr:
+	push	bc
+	push	hl		; save HL and BC
+	call	$PSTR		; start by dumping the FDB
+	defb	'FDB',CR,LF,0
+	ldw	hl,(ix+FC.FDB)	; point HL to FDB
+	ld	bc,FINFSZ
+	call	$DUMPM
+	call	$PSTR		; now the FSR
+	defb	'FSR',CR,LF,0
+	push	ix		; get the FSR pointer to HL
+	pop	hl
+	ld	bc,FCSIZ
+	call	$DUMPM
+	pop	hl
+	pop	bc
+	ret
+    endif ;0
+
+  endif ;DEBUG
+
+;*******************************************************************
+; Console handlers
+;
+; Read console character to A
+conin:	ld	hl,kbchar	; any previous character seen?
+	ld	a,(hl)
+	ld	(hl),0
+	or	a
+	ret	nz		; yes, return it
+	jp	_conin		; else call BIOS
+
+; Read console character with echo
+conech:	call	conin
+	call	echoc
+	ret	c
+	push	af
+	ld	c,a
+	call	tabout
+	pop	af
+	ret
+
+; Check for printable char in A
+;
+; Return Z bit set if terminator found
+; and Carry set if non-printable
+echoc:
+	cp	CR
+	ret	z
+	cp	LF
+	ret	z
+	cp	TAB
+	ret	z
+	cp	BS
+	ret	z
+	cp	' '
+	ret
+
+; Check for character ready
+conbrk:	ld	a,(kbchar)
+	or	a
+	jr	nz,conb1	; skip if active kbchar
+	call	_conist		; call BIOS
+	and	1
+	ret	z		; none available
+	call	_conin		; call BIOS to read it
+	cp	13h		; is it a Ctrl-S?
+	jr	nz,conb0
+	call	_conin		; yes, get another char
+	cp	ETX		; is it a Ctrl-C?
+	jp	z,done		; yes, exit the program
+	xor	a		; no, return with zero in A
+	ret
+
+conb0:	ld	(kbchar),a	; save character
+conb1:	ld	a,1		; return non-zero
+	ret
+
+; Show a control character in printable form
+ctlout:	ld	a,c
+	call	echoc
+	jr	nc,tabout	; not a control char
+	push	af
+	ld	c,'^'		; output caret
+	call	conout
+	pop	af
+	or	'@'		; make it printable
+	ld	c,a
+tabout:	ld	a,c
+	cp	TAB		; tab?
+	jp	nz,conout
+tab0:
+	call	space		; expand tabs to the right number
+	ld	a,(column)	;  of spaces
+	and	07h
+	jr	nz,tab0
+	ret
+
+; Cancel RDLIN input line ready for re-input
+crlfp:
+	ld	c,'#'		; signal a deleted line with a "#"
+	call	conout
+	call	crlf
+crlfp0:	ld	a,(column)	; move the cursor back to starting
+	ld	hl,strtcol	; position
+	cp	(hl)
+	ret	nc
+	call	space
+	jr	crlfp0
+
+;*******************************************************************
 
 VERSION: defb	memsize/10+'0',memsize mod 10 +'0','K V0.99'
   if DEBUG
@@ -3126,7 +3326,7 @@ VERSION: defb	memsize/10+'0',memsize mod 10 +'0','K V0.99'
 	defb	CR,LF,0
 
 argc:	defs	2
-p_argv:	defs	10*2		; Room for 10 pointers (0..9)
+p_argv:	defs	10*2		; room for 10 pointers (0..9)
 
 vers1:	defb	';1'
 NULL:	defb	0
@@ -3135,9 +3335,71 @@ COMFCB:	defs	FNSZ		; RSX280 filespec of CP/M .COM file
 
 DOTCOM:	defb	'.COM',0
 
+mdfn:	defb	'MASTER',0	; master directory filename
+dirtype:
+	defb	'.DIR;1',0	; directory fileext
+
+idxfn:	defb	'SY:[MASTER]INDEXF.SYS;1',0 ; index filename
+
+dirfn:	defb	'SY:[MASTER]'	; users directory location
+dirname:
+	defs	16		; directory.DIR;1 (16 chars)
+
+cdname:
+	defs	16		; current directory name
+
+searcha:
+	defs	2		; search address
+searchl:
+	defs	1		; search length
+
+dptr:	defs	1		; directory entry pointer 0,32,64,96
+dcnt:	defs	2		; directory counter
+
+direntry:
+	defs	DESZ		; directory file record
+dirfsize:
+	defs	2		; 16-bit file size in sectors
+
+diropn:	defb	0		; directory file is open flag
+dirrec:	defs	2
+idxopn:	defb	0		; INDEXF.SYS file is open flag
+idxentry:
+	defs	IESZ		; index file record
+
 topcom:	defs	2
 
-u_name:	defs	16		; holds converted RSX file name
+; BIOS Disk Parameter Header
+; We simulate a single 8MB drive with blocksize 4096
+; and 1024 directory entries
+dph:	defw	0		; no sector translation
+cdrmax:	defw	maxdir		; scratchpad - current directory maximum
+curtrk:	defw	0		; scratchpad - current track
+currec:	defw	0		; scratchpad - current record
+buffa:	defw	bufdir		; pointer to directory sector buffer
+	defw	dpb		; disk parameter header
+	defw	0,0		; no check vector or allocation vector
+
+dpb:
+sectpt:	defw	1024		; sectors per track, 64 tracks
+blkshf:	defb	5		; block shift factor (block size 4096)
+blkmsk:	defb	31		; block mask
+extmsk:	defb	1		; extent mask
+maxall:	defw	2048-1		; dsm (disk size in 4K blocks)-1
+dirmax:	defw	maxdir-1	; drm (1024 dir entries)
+dirblk:	defb	0FFh,0h		; al0, al1 (need 8 groups for directory)
+chksiz:	defw	0		; check vector size (none = fixed disk)
+offset:	defw	0		; reserved tracks
+
+cdrmaxa:
+	defw	cdrmax
+
+; Search directory sector buffer
+bufdir:	defs	128		; the faked directory sector
+extent:	defs	1		; the faked extent number
+
+file_name:
+	defs	20		; holds converted RSX file name
 
 ; RSX280 filename strings
 ; enough for filename.ext;1 (15 chars including NUL terminator)
@@ -3148,25 +3410,26 @@ oldnam:	defs	16		; holds new name for rename
 ; QIO commands for console terminal
 IO.ATA	equ	IO.ATT OR (TF.AST SHL 8)	; attach with AST
 ;
-attqio:	QIOW$	IO.ATA,LUNTI,TOEFN,QIOSB,,<TTAST>	; attach console
-ttoqio:	QIOW$	IO.WVB,LUNTI,TOEFN,QIOSB,,<ttobuf,,,,0>	; console output
+attqio:	QIOW$	IO.ATA,LUN_TI,EFN_TO,QIOSB,,<TTAST>	; attach console
+ttoqio:	QIOW$	IO.WVB,LUN_TI,EFN_TO,QIOSB,,<ttobuf,,,,0>	; console output
 
 ; QIO status
 QIOSB:	defs	4
 
+; Keeps track of LUNs in-use
 luntbsz	equ	4
 luntb:	defs	luntbsz		; LUN "in-use" table
-				; One byte for each LUN 1-4
-				; Non-zero means file open
-opnltbe: defs	2		; Current luntb entry
-opnlun:	defs	2		; The LUN being accessed
+				; one byte for each LUN 1-4
+				; non-zero means file open
+opnltbe: defs	2		; current luntb entry
+opnlun:	defs	2		; the LUN being accessed
 
 ; Console terminal input queue
-TTQ:	defs	1		;input position
-	defs	1		;output position
-	defs	64		;buffer
+TTQ:	defs	1		; input position
+	defs	1		; output position
+	defs	64		; buffer
 
-ttlc:	defs	1		;lowercase input flag
+ttlc:	defs	1		; lowercase input flag
 
 ; Console input line
 ttiptr:	defw	ttibuf		; pointer to buffer
@@ -3175,18 +3438,17 @@ ttibuf:	defb	ttibsz		; first byte has size
 	defs	ttibsz+2	; the line buffer
 
 ; Console output line
-glbpsv:	defs	2
-ttocnt:	defb	0		;output count
-ttoptr:	defw	ttobuf		;output pointer
-ttobuf:	defs	128		;buffer
+ttocnt:	defb	0		; output count
+ttoptr:	defw	ttobuf		; output pointer
+ttobuf:	defs	128		; buffer
 
-CCFLG:	defs	2		;ctrl-C break flag
+CCFLG:	defs	2		; ctrl-C break flag
 
 ; BDOS console storage (RDBUF)
 compcol:
 	defb	0		; output flag (non zero means no output)
 strtcol:
-	defb	2		; starting position for cursor
+	defb	0		; starting position for cursor
 column:	defb	0		; cursor position (0=start of line)
 kbchar:	defb	0
 
@@ -3196,21 +3458,42 @@ kbchar:	defb	0
 ; Note: The file access mode bits are overwritten by the _open
 ; routine and we use a common event flag for access to all files
 
-fsr_1:	FSR$	FDB1,<1 SHL FM.RD>,LUNFL1,FIOEFN
-fsr_2:	FSR$	FDB2,<1 SHL FM.WR>,LUNFL2,FIOEFN
-fsr_3:	FSR$	FDB3,<1 SHL FM.WR>,LUNFL3,FIOEFN
-fsr_4:	FSR$	FDB4,<1 SHL FM.WR>,LUNFL4,FIOEFN
+fsr_1:	FSR$	FDB_F1,<1 SHL FM.RD>,LUN_F1,EFN_F
+fsr_2:	FSR$	FDB_F2,<1 SHL FM.WR>,LUN_F2,EFN_F
+fsr_3:	FSR$	FDB_F3,<1 SHL FM.WR>,LUN_F3,EFN_F
+fsr_4:	FSR$	FDB_F4,<1 SHL FM.WR>,LUN_F4,EFN_F
+
+; Directory file
+fsrdir:	FSR$	FDB_D,<1 SHL FM.RD>,LUN_D,EFN_D
+; Index file
+fsridx:	FSR$	FDB_IX,<1 SHL FM.RD>,LUN_IX,EFN_IX
 
 ; File Descriptor Blocks
-FDB1:	defs	FINFSZ
-FDB2:	defs	FINFSZ
-FDB3:	defs	FINFSZ
-FDB4:	defs	FINFSZ
+FDB_F1:	defs	FINFSZ
+FDB_F2:	defs	FINFSZ
+FDB_F3:	defs	FINFSZ
+FDB_F4:	defs	FINFSZ
 
 ; FDBs for file rename/delete
-FDBDEL:
-FDBNEW:	defs	FINFSZ
-FDBOLD:	defs	FINFSZ
-  endif ;RSX280
+FDBDEL:				; delete uses same as rename FDB
+FDBNEW:	defs	FINFSZ		; new name FDB
+FDBOLD:	defs	FINFSZ		; old name FDB
+  if 0
+FDBSER:	defs	FINFSZ		; search file-spec FDB
+  endif ;0
+FDB_D:	defs	FINFSZ		; directory FDB
+FDB_IX:	defs	FINFSZ		; INDEXF.SYS FDB
+
+;*******************************************************************
+;
+; Stack
+	cseg
+
+    if (($-tpa) and 1)		; even address boundary
+	defs	1
+    endif
+
+	defs	256
+tmpstk:
 
 	end

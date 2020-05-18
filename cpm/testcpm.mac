@@ -4,78 +4,145 @@
 ;
 	.z80
 
+bdos	equ	5
+ddma	equ	0080h	; default DMA address
+fcb1	equ	005Ch	; default FCB
+
 start:	ld	hl,0
 	add	hl,sp	; get stack pointer
 	push	hl
 	ld	c,9
 	ld	de,stkmsg
-	call	5
+	call	bdos
 	pop	hl
 	call	hlhex
 	call	crlf
 
 	call	dump_pg0
 
+	ld	hl,ddma	; any parameters?
+	ld	a,(hl)
+	or	a
+	jr	z,chartest	; no - do charater I/O test
+
+	jp	searchtest	; do a search test
+
+
+
+chartest:
 	ld	c,9	; print string
 	ld	de,msg0
-	call	5
+	call	bdos
 	ld	c,1	; read a character
-	call	5
+	call	bdos
         push	af	; save it
 	ld	c,9
 	ld	de,msg1
-	call	5
+	call	bdos
 	pop	af
 	push	af
 	ld	e,a
 	ld	c,2	; echo it back
-	call	5
+	call	bdos
 	ld	c,9
 	ld	de,msg2
-	call	5
+	call	bdos
 	pop	af
 	call	ahex	; print char in hex
 	ld	c,9
 	ld	de,msg3
-	call	5
+	call	bdos
 
 	call	delay	; Give them a chance to type something
 
 getc:	ld	e,0FFh	; direct console I/O test
 	ld	c,6
-	call	5
+	call	bdos
 
 	or	a	; anything typed?
 	jr	nz,gotc	; yes
 
 	ld	c,9
 	ld	de,msg5
-	call	5
-	jr	done
+	call	bdos
+	jp	crlf		; new line and exit
 
 gotc:	push	af
 	ld	c,9
 	ld	de,msg4
-	call	5
+	call	bdos
 	pop	af
 	call	ahex
+	jp	crlf		; new line and exit
 
-done:	; new line and exit
+searchtest:
+	ld	c,26		; setdma
+	ld	de,ddma
+	call	bdos
+
+	ld	c,17		; search first
+	ld	de,fcb1		; use default FCB
+	call	bdos
+
+	push	af		; save result
+
+	ld	c,9
+	ld	de,srchmsg
+	call	bdos
+
+	ld	hl,fcb1+1	; print out the file spec we're
+	ld	b,8+3		;  searching for
+p_nam:	ld	a,(hl)
+	inc	hl
+	push	hl
+	push	bc
+	call	putc
+	pop	bc
+	pop	hl
+	djnz	p_nam
+	call	crlf
+
+	ld	c,9		; show result of search_first
+	ld	de,resultmsg
+	call	bdos
+	pop	af
+	call	ahex
+	call	crlf
+	call	dump_dma
+
+	ld	c,18		; now do a search_next
+	call	bdos
+
+	push	af
+	ld	c,9
+	ld	de,resultmsg
+	call	bdos
+	pop	af
+	call	ahex
+	call	crlf
+	call	dump_dma
+
+	; new line and exit
 
 crlf:	push	hl
 	push	de
 	push	bc
 	ld	c,9
 	ld	de,crlf_msg
-	call	5
+	call	bdos
 	pop	bc
 	pop	de
 	pop	hl
 	ret
 
+; Dump default DMA buffer
+dump_dma:
+	ld	hl,ddma	; start at DDMA address
+	jr      d_addr
+
 ; Dump out page 0 of memory
 dump_pg0:
-	ld	hl,0
+	ld	hl,0	; start at address 0000
 d_addr:	call	hlhex
 	call	colonsp
 	push	hl
@@ -113,7 +180,7 @@ putc:	push	hl
 	jr	co
 dot:	ld	e,'.'
 co:	ld	c,2
-	call	5
+	call	bdos
 	pop	bc
 	pop	de
 	pop	hl
@@ -125,7 +192,7 @@ space:	push	hl
 	push	bc
 	ld	e,' '
 	ld	c,2
-	call	5
+	call	bdos
 	pop	bc
 	pop	de
 	pop	hl
@@ -138,7 +205,7 @@ colonsp:
 	push	bc
 	ld	c,9
 	ld	de,cspmsg
-	call	5
+	call	bdos
 	pop	bc
 	pop	de
 	pop	hl
@@ -168,7 +235,7 @@ chex:	and	0Fh
 	push	bc
 	ld	e,a
 	ld	c,2		; Console output
-	call	5
+	call	bdos
 	pop	bc
 	pop	de
 	pop	hl
@@ -209,5 +276,11 @@ crlf_msg:
 	defb	13,10,'$'
 
 cspmsg:	defb	': $'
+
+srchmsg:
+	defb	13,10,'Search test - looking for file $'
+
+resultmsg:
+	defb	13,10,'Result code=$'
 
 	end	start
