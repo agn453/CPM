@@ -1,5 +1,6 @@
 	title	CP/M 2.2 Emulator for RSX280
 	ident	"V0.99"		; pre-release version
+
 ;*******************************************************************
 ;
 ;	CPM - CP/M 2.2 BDOS/BIOS emulation for RSX280.
@@ -31,10 +32,15 @@
 ;  Also, portions of the original CP/M 2.2 BDOS and CCP
 ;  source code by Digital Research Inc. have been adapted to
 ;  preserve the functions of various routines in this
-;  emulation.  CP/M is Copyright (C) Caldera Corporation and
-;  later by Lineo Inc.; and is available from the "Unofficial
-;  CP/M Web Site" for hobbyists, developers and the community
-;  at http://www.cpm.z80.de
+;  emulation.
+;
+;  CP/M is Copyright (C) Caldera Corporation and later by Lineo Inc.
+;
+;  Original source-code, disassembled sources and documentation
+;  for CP/M are available from the "Unofficial CP/M Web Site" for
+;  hobbyists, developers and the retro-computing community at
+;
+;	 http://www.cpm.z80.de
 ;
 ;*******************************************************************
 
@@ -86,10 +92,11 @@ TAB	equ	09h
 CTRLZ	equ	1Ah
 RUBOUT	equ	7Fh
 
+;*******************************************************************
 ; CP/M memory sizing
 ; (consult the TKB map file before changing this)
 ;
-memsize	equ	58		; 58KB memory size
+memsize	equ	57		; 58KB memory size
 topmem	equ	memsize*1024
 cpmoffs	equ	topmem-20*1024	; based on standard CP/M 2.2
 
@@ -144,10 +151,12 @@ fcblun	equ	28		; file LUN
 fcbmagic equ	29		; set to magic number if file open
 fcbrec	equ	30		; RSX280 record counter read/write word
 
+DE.NAME9 equ	DE.NAME+8	; offset for 9th character of filename
+
 empty	equ	0E5h		; deleted or empty directory entry
 recsiz	equ	128		; record size (CP/M sector size)
   if DEBUG
-maxdir	equ	64	;**temporary while debugging search
+maxdir	equ	128	;**temporary while debugging search
   else
 maxdir	equ	1024		; number of directory entries
   endif ;DEBUG
@@ -194,7 +203,7 @@ flag_rw	equ	(1 SHL FM.RD) OR (1 SHL FM.WR)	; R/W mode for file open()
 				; (opens an existing file)
 
 ttibsz	equ	80		; terminal input buffer size
-
+	page
 ;*******************************************************************
 ;
 ; CP/M transient program .COM files are loaded here
@@ -263,61 +272,10 @@ bdos2:
 	cp	maxbdosfn+1
 	ret	nc		; function number too big
 	add	a,a
-	ldw	(aret),0	; clear return result code
 	ld	hl,bdostable	; index into table
 	add	hl,a
 	ld	hl,(hl)
 	jp	(hl)		; go there, function just returns above
-
-;*******************************************************************
-; Convert CP/M FCB name to RSX280 file name in variable file_name
-; Illegal filename characters are replaced with a dash "-", and
-; a wildcard '?' is translated to a '%'.
-;
-;
-; on entry: IY -> pointer to FCB
-;
-; on exit : HL -> pointer to string.
-;	    DE -> pointer to EOS.
-getname:
-	ld	de,file_name
-	lda	hl,(iy+fcbname)	; get address of name
-	ld	b,8		;  up to 8 characters
-g_l1:	ld	a,(hl)
-	inc	hl
-	or	a		; is it NUL?
-	jr	z,g_l2		; yes
-	cp	' '		; is it blank?
-	jr	z,g_l2		; yes
-	call	chmap		; fix-up for RSX280
-	ld	(de),a
-	inc	de
-	djnz	g_l1
-g_l2:
-	lda	hl,(iy+fcbext)	; get address of file extension
-	ld	a,(hl)
-	cp	' '		; is it blank?
-	jr	z,g_l4		; no extension if blank
-	ld	a,'.'		; add a '.'
-	ld	(de),a
-	inc	de
-	ld	b,3		; now up to 3 characters
-g_l3:
-	ld	a,(hl)
-	inc	hl
-	or	a		; NUL?
-	jr	z,g_l4
-	cp	' '		; blank?
-	jr	z,g_l4
-	call	chmap		; fix-up for RSX280
-	ld	(de),a
-	inc	de
-	djnz	g_l3
-g_l4:
-	xor	a
-	ld	(de),a		; terminate the string with a NUL
-	ld	hl,file_name	; return pointer to name
-	ret
 
 ;*******************************************************************
 ; BDOS call return version number
@@ -361,6 +319,7 @@ pr_lop:	ld	a,(hl)
 	inc	hl
 	jr	pr_lop
 pr_done:
+	call	$FLUSH		; empty console buffer
 	pop	hl
 	ret
 
@@ -465,7 +424,7 @@ backx:	ld	a,(strtcol)	; backup the cursor
 	cp	(hl)
 	jr	nc,rdbuf
 	dec	(hl)		; move cursor back 1
-	call	backup
+	call	backsp
 	jr	backx
 notx:	cp	15h		; Ctrl-U (cancel line)?
 	jr	nz,notu
@@ -502,11 +461,11 @@ rep1:
 	ld	hl,column
 	sub	(hl)
 	ld	(compcol),a
-backsp:
-	call	backup
+back1:
+	call	backsp
 	ld	hl,compcol
 	dec	(hl)
-	jr	nz,backsp
+	jr	nz,back1
 	jp	readn0
 notr:
 rdecho:
@@ -542,6 +501,7 @@ readen:
 	pop	hl
 	ret
 
+;*******************************************************************
 ; New line on console
 crlf:
 	ld	c,CR
@@ -554,11 +514,13 @@ space:	ld	c,' '
 	jr	conout
 
 ; Backspace cursor
-backup:	call	pctlh
+backsp:	call	pctlh
 	call	space
 pctlh:
 	ld	c,BS
 ;	jp	conout
+
+; fall through
 
 ;*******************************************************************
 ; Console output and keep track of the cursor position.
@@ -674,21 +636,6 @@ ff_ewild:
 	djnz	ff_ewild
 	ret
 
-; If A contains one of <=>:;_ then set Z flag bit
-delimiter:
-	cp	'<'
-	ret	z
-	cp	'='
-	ret	z
-	cp	'>'
-	ret	z
-	cp	':'
-	ret	z
-	cp	';'
-	ret	z
-	cp	'_'
-	ret
-
 ;*******************************************************************
 ; BDOS call open file.
 ;
@@ -799,18 +746,20 @@ search_first:
 	call	dumpfcb
   endif ;DEBUG
 
+	ldw	(aret),0	; clear return result code
+
 	ld	a,(diropn)	; is directory already open?
 	or	a
 	jr	z,sf_1		; no
 
-	ld	ix,fsrdir	; yes, re-open it to get updates
-	call	FCLOSE
+	ld	ix,fsrdir	; yes, re-open it to get
+	call	FCLOSE		;  any recent updates
 	jr	nc,sf_1
 
   if DEBUG
 	push	af
 	call	$PSTR
-	defb	'S1st-E-Closing dir',0
+	defb	'S1st-E-Close dir',0
 	pop	af
   endif ;DEBUG
 	jp	sf_err
@@ -837,35 +786,23 @@ sf_2:	ld	hl,cdname
 	jp	c,sf_err
 
 	ld	ix,fsrdir
+	ld	(ix+FC.MODE),1 shl FM.RD	; Read mode
 	call	FOPEN		; open directory
 	jr	nc,sf_4
-
-	jp	c,sf_err
-
-sf_4:	ld	a,1		; mark directory file as open
-	ld	(diropn),a	;  and not end of file (bit 7 off)
-
-	ld	d,0		; seek to start of
-	ld	e,d		;  directory file
-	ld	b,d
-	ld	c,d
-
-	ld	(dirrec),de	; directory entry pointer to beginning
-	ld	(dirfsize),de	; clear previous file size too
-
-	ld	ix,fsrdir	; seek to DEBC record
-	call	FSEEK
-	jr	nc,sf_5
 
   if DEBUG
 	push	af
 	call	$PSTR
-	defb	'S1st-E-Seek dir',0
+	defb	'S1st-E-Open dir',0
 	pop	af
   endif ;DEBUG
-	jp	sf_err
+	jp	c,sf_err
 
-sf_5:	ld	a,(idxopn)	; is INDEXF.SYS open?
+sf_4:
+	ld	a,1		; mark directory file as open
+	ld	(diropn),a	;  and not end of file (bit 7 off)
+
+	ld	a,(idxopn)	; is INDEXF.SYS open?
 	or	a
 	jr	z,sf_6		; No
 
@@ -876,7 +813,7 @@ sf_5:	ld	a,(idxopn)	; is INDEXF.SYS open?
   if DEBUG
 	push	af
 	call	$PSTR
-	defb	'S1st-E-Closing idx',0
+	defb	'S1st-E-Close idx',0
 	pop	af
   endif ;DEBUG
 	jp	sf_err
@@ -884,9 +821,10 @@ sf_5:	ld	a,(idxopn)	; is INDEXF.SYS open?
 sf_6:	ld	hl,idxfn	; parse INDEXF.SYS filename
 	ld	ix,FDB_IX	;  into the FDB
 	call	PFN
-	jr	c,sf_err
+	jp	c,sf_err
 
 	ld	ix,fsridx
+	ld	(ix+FC.MODE),1 shl FM.RD	; Read mode
 	call	FOPEN		; open INDEXF.SYS
 	jr	nc,sf_7
 
@@ -896,55 +834,54 @@ sf_6:	ld	hl,idxfn	; parse INDEXF.SYS filename
 	defb	'S1st-E-Open idx',0
 	pop	af
   endif ;DEBUG
-	jr	sf_err
+	jp	sf_err
 
 sf_7:
-	ld	d,0		; seek to start of
-	ld	e,d		;  index file
-	ld	b,d
-	ld	c,d
-	ld	ix,fsridx
-	call	FSEEK
-
-;**Dummy read - otherwise first random read is wrong record
-;	ld	de,idxentry
-;	ld	bc,IESZ
-;	call	FREAD
-	jr	nc,sf_8
-
-  if DEBUG
-	push	af
-	call	$PSTR
-	defb	'S1st-E-Index seek',0
-	pop	af
-  endif ;DEBUG
-	jr	sf_err
-
-sf_8:	ld	a,1
+	ld	a,1
 	ld	(idxopn),a	; remember INDEXF.SYS is open
 
 	ld	c,0		; length assuming '?' true
-	ld	a,(iy+fcbdrive)	; if drive code is '?',
+	ld	hl,(arg)	; if drive code is '?'
+	ld	a,(hl)
 	cp	'?'		;  we match all files on the
 	jr	z,qselect	;  current drive
 
+	; IY also points to CP/M FCB
 	ld	a,(iy+fcbex)	; get extent from CP/M FCB
 	cp	'?'		; if it is wildcard then clear
 	jr	z,sf_9		; module number (s2 byte)
 	ld	(iy+fcbmodnum),0
 
-sf_9:	ld	c,fcbnamlen	; length to match
+sf_9:	; CP/M 2.2 BDOS calls RESELECT here to select the drive and user
+	ld	(iy+fcbdrive),0	; only a single drive, no user areas
+
+	ld	c,fcbnamlen	; length to match
 
 qselect:
+  if DEBUG
+	push	bc
+	call	$PSTR
+	defb	'Srch-I-Matchlen=',0
+	ld	a,c
+	call	$AHEX
+	pop	bc
+  endif ;DEBUG
+
 	call	search		; search and construct directory entry
 
 dir_to_user:
-	ld	hl,(dmaadr)
-	ex	de,hl
-	ld	hl,(buffa)	; copy directory buffer to user
-	ld	bc,recsiz	;  DMA address
-	ldir
-	ld	hl,(aret)
+	ld	de,(buffa)	; copy directory buffer to user
+	ld	hl,(dmaadr)	;  DMA address
+	ld	c,recsiz
+move:	inc	c
+move0:	dec	c
+	jr	z,move9
+	ld	a,(de)
+	ld	(hl),a
+	inc	de
+	inc	hl
+	jr	move0
+move9:	ld	hl,(aret)
 	ret
 
 sf_err:
@@ -973,13 +910,81 @@ search_next:
 	call	searchn		; search for next match
 	jr	dir_to_user
 	
-; Search for directory element of length C pointed to by IY
+; Search for directory element of length C. The
+; address of the CP/M FCB is stored at SEARCHA
+;
 search:	ld	a,0FFh
 	ld	(dirloc),a	; assume not found
 	ld	hl,searchl
 	ld	(hl),c		; save search length and
 	ld	(searcha),iy	;  pointer to CP/M FCB
 	call	set_end_dir	; init dcnt to 0FFFFh
+
+	; rewind to start of RSX280 directory
+	ld	d,0		; seek to start of
+	ld	e,d		;  directory file
+	ld	b,d
+	ld	c,d
+
+	ld	(dirrec),de	; directory entry pointer to beginning
+	ld	(dirfsize),de	; clear previous file size too
+
+  if DEBUG
+	push	hl		; show DEBC for dir file seek
+	push	bc
+	push	de
+	call	$PSTR
+	defb	'dirr=',0
+	pop	hl
+	push	hl
+	call	$HLHEX
+	pop	hl
+	ex	(sp),hl
+	push	hl
+	call	$HLHEX
+	pop	bc
+	pop	de
+	pop	hl
+  endif ;DEBUG
+
+	ld	ix,fsrdir	; seek to DEBC record
+	call	FSEEK
+	jr	nc,sf_5
+
+  if DEBUG
+	push	af
+	call	$PSTR
+	defb	'S1st-E-Seek dir',0
+	pop	af
+  endif ;DEBUG
+	jp	sf_err
+
+sf_5:
+
+ if 1
+;**Dummy read - otherwise first random read of INDEXF.SYS is wrong record
+	ld	de,idxentry
+	ld	bc,IESZ
+	call	FREAD
+	jp	c,sf_err
+ endif ;1
+
+	ld	d,0		; seek to start of
+	ld	e,d		;  index file
+	ld	b,d
+	ld	c,d
+	ld	ix,fsridx
+	call	FSEEK
+	jr	nc,sf_8
+
+  if DEBUG
+	push	af
+	call	$PSTR
+	defb	'S1st-E-Seek idx',0
+	pop	af
+  endif ;DEBUG
+	jp	sf_err
+sf_8:
 
 	; fall through into search next
 
@@ -1001,8 +1006,8 @@ searchn:
 	jr	nc,search_fin	; yes, stop search
 
 searchnext:
-  if DEBUG
-	push	hl
+  if 0;DEBUG
+	push	hl		; show directory sector count
 	push	de
 	push	bc
 	call	$PSTR
@@ -1037,7 +1042,8 @@ searchloop:
 	jr	searchok	; it matched
 
 searchext:
-	; A has the extent number to match
+	; A has the FCB character to match
+	; attempt an extent number match
 	push	bc
 	ld	c,(hl)		; directory character to C
 	call	compext		; compare char
@@ -1104,15 +1110,6 @@ compcdr:
 	sbc	a,(hl)		; high(dcnt) - high(cdrmax)
 	ret			; Carry is set if cdrmax > dcnt
 
-; Compute HL = DE - HL
-subdh:	ld	a,e
-	sub	l
-	ld	l,a
-	ld	a,d
-	sbc	a,h
-	ld	h,a
-	ret
-
 ; Read next directory entry
 read_dir:
 	ld	hl,(dirmax)	; maximum dir entries -1 to DE
@@ -1120,7 +1117,10 @@ read_dir:
 	ld	hl,(dcnt)	; increment directory entry count
 	inc	hl
 	ld	(dcnt),hl
-	call	subdh		; DE - HL
+	push	de		; HL = DE-HL
+	ex	de,hl
+	subw	hl,de
+	pop	de
 	jr	nc,read_dir0
 	jr	set_end_dir	; set dcnt to end of directory
 
@@ -1147,7 +1147,7 @@ rd_dir:	; Read directory into the sector pointed to by BUFFA
 	jp	nz,rd_more	; yes, do them
 
 	; Read next directory entry
-rd_dire:
+rd_nxtd:
 	ld	a,(diropn)	; have we reached the end of the
 	rla			;  directory file?
 	jr	c,rd_blank	; yes, make an empty extent
@@ -1181,30 +1181,60 @@ rd_b0:	ld	(hl),a		; fill it with E5's
 rd_n1:
 	incw	(dirrec)	; bump directory record counter
 
+	ld	ix,direntry	; point to directory file entry
+
   if DEBUG
 	push	bc
 	push	hl
 	call	$PSTR
-	defb	'dir',0
-	ld	hl,direntry
-	ld	bc,DESZ
-	call	$DUMPM
+	defb	'dir ',0
+	ldw	hl,(ix+DE.INDX)	; print index file entry number
+	call	$HLHEX
+	call	$SPACE
+	push	ix
+	pop	hl
+	inc	hl
+	inc	hl
+	ld	b,12		; print filename
+dbg_1:	ld	a,(hl)
+	inc	hl
+	call	$TTOUT
+	djnz	dbg_1
+	call	$SPACE
+	ldw	hl,(ix+DE.VER)	; print version
+	call	$HLHEX
 	pop	hl
 	pop	bc
   endif ;DEBUG
-
-	ld	ix,direntry	; point to directory file entry
 
 	ld	hl,(ix+DE.VER)	; only use version 1 files
 	dec	hl
 	ld	a,h
 	or	l
-	jr	nz,rd_dire
+	jr	nz,rd_nxtd
+
+ if 0
+	ld	a,(ix+DE.NAME9)	; don't allow 9-character names
+
+  if DEBUG
+	push	af
+	call	$PSTR
+	defb	'9=',0
+	pop	af
+	push	af
+	call	$AHEX
+	call	$CRLF
+	pop	af
+  endif ;DEBUG
+
+	cp	' '
+	jr	z,rd_nxtd
+ endif ;0
 
 	ldw	hl,(ix+DE.INDX)	; get file link count
 	ld	a,h
 	or	l		; is it zero?
-	jr	z,rd_dire	; yes, skip to next directory entry
+	jr	z,rd_nxtd	; yes, skip to next directory entry
 
 	dec	hl		; it's 1-based inode number
 	multuw	hl,IESZ		; compute index file position
@@ -1212,7 +1242,7 @@ rd_n1:
 	ld	b,h		; move low 16-bits to BC
 	ld	c,l
 
-  if 0;DEBUG
+  if DEBUG
 	push	hl
 	push	bc
 	push	de
@@ -1232,14 +1262,14 @@ rd_n1:
 
 	ld	ix,fsridx	; seek to DEBC record in INDEXF.SYS
 	call	FSEEK
-	jr	c,rd_end_dir	; seek error means the end
+	jp	c,rd_end_dir	; seek error means the end
 
 	ld	de,idxentry
 	ld	bc,IESZ
 	call	FREAD
 	jp	c,rd_end_dir	; error reading index is also the end
 
-  if 0;DEBUG
+  if DEBUG
 	push	hl
 	push	bc
 	call	$PSTR
@@ -1253,12 +1283,12 @@ rd_n1:
 
 	ld	ix,idxentry	; is it a file?
 	bit	FA.FILE,(ix+IE.ATTR)
-	jp	nz,rd_dire	; no, read next dir entry
+	jp	nz,rd_nxtd	; no, read next dir entry
 
 	ldw	hl,(ix+IE.LCNT)	; if link count is zero
 	ld	a,h		;  this file has been deleted
 	or	l
-	jp	z,rd_dire	; skip to next entry
+	jp	z,rd_nxtd	; skip to next entry
 
 	ldw	hl,(ix+IE.USED)	; 512-byte blocks used to BCHL
 	ld	b,0
@@ -1321,7 +1351,7 @@ sz_dehl:
 	ld	(dirfsize),hl	; save low 16-bits
 	ld	a,d		; is high 16-bits non-zero?
 	or	e
-	jp	nz,rd_dire	; yes, silently ignore huge files
+	jp	nz,rd_nxtd	; yes, silently ignore huge files
 
 rd_more:
 
@@ -1336,8 +1366,8 @@ rd_more:
 	ld	(hl),0		; file is in user area 0
 	inc	hl
 	ex	de,hl
-	ld	hl,direntry+2	; copy filename (8-chars)
-	ld	bc,8
+	ld	hl,direntry+DE.NAME
+	ld	bc,8		; copy filename (8-chars)
 	ldir
 	inc	hl		; skip 9th char
 	ld	bc,3		; then extension (3-chars)
@@ -1600,10 +1630,10 @@ setrandom:
 	ret
 
 readrandom:
-	call	rseek
+	call	_rseek
 	call	read128
 ;    nread = read(blk->desc, dmaadr, 128);
-    	call	rseek
+    	call	_rseek
 	cpw	hl,-1
 	jp	z,no_good
 	ld	h,b		; bytes read to HL
@@ -1616,156 +1646,20 @@ ret_hl_0:
 	ld	hl,0
 	ret
 
-
+;*******************************************************************
+;
 writerandom:
-	call	rseek
+	call	_rseek
 	call	write128
 ;    if ( write(blk->desc, dmaadr, 128) != 128 )
 	ld	h,b
 	ld	l,c		; bytes written to HL
- 	call	rseek
+ 	call	_rseek
 	cpw	hl,128
 	jp	nz,no_good
 	jp	ret_hl_0
 
-;
-; record seek (128 byte sector) for read/write random
-;
-; Parameters passed on stack
-;
-; rseek(blk->desc, blk->ranrec, type);
-;       LUN , sector, type
-;
-; Under RSX280 we always do a byte seek
-
-rseek:	push	hl		; save HL
-	push	de
-	push	bc
-
-	ld	h,0
-	ld	l,(iy+fcblun)	; fetch the LUN
-	; point IX to the RSX280 file storage region
-	call	checklun
-	jr	nc,sk_err	; invalid LUN
-	ld	b,h		; LUN to BC
-	ld	c,l
-	ld	de,FCSIZ+512
-	ld	hl,fsr_1
-rs_1:	dec	bc		; index fsr table by LUN-1
-	ld	a,c
-	or	a
-	jr	z,rs_3
-	add	hl,de
-	jr	rs_1
-rs_3:	push	hl
-	pop	ix		; IX now points to this file's FSR
-
-	ldw	hl,(iy+fcbran)	; fetch desired sector from CP/M  FCB
-	ldw	(iy+fcbrec),hl	; set it a the currect record in the FCB
-
-	; convert sector offset to byte (*128)
-	; and load into 32-bit byte position
-	; in the DEBC registers
-
-	multuw	hl,128		; multiply returns DEHL
-	ld	b,h		;  but fseek needs DEBC
-	ld	c,l
-	call	FSEEK
-	jr	nc,rs_2		; no errors?
-
-	ld	h,0		; yes, error code in A
-	ld	l,a
-sk_err:	ld	(errno),hl      ; save it in errno
-
-rs_2:	pop	bc
-	pop	de
-	pop	hl		; restore HL
-	ret
-
 ;*******************************************************************
-; Utility routines
-;
-; Convert char in A to uppercase
-UCASE:	cp	'a'
-	ret	c
-	cp	'z'+1
-	ret	nc
-	and	5Fh
-	ret
-
-; convert illegal RSX280 filename character to a '-'.
-; (only A..Z and 0..9 are allowed), and a wildcard '?'
-; to a '%'.
-chmap:
-	and	07Fh		; no parity, 7-bit only
-	cp	'?'
-	jr	z,chwild
-	cp	'0'
-	jr	c,chill
-	cp	'9'+1
-	ret	c		; '0'-'9' is OK
-	cp	'A'
-	jr	c,chill
-	cp	'Z'+1
-	ret	c		; 'A'-'Z' is OK
-	cp	'a'
-	jr	c,chill
-	cp	'z'+1
-	jr	nc,chill
-	sub	a,32		; 'a'-'z' is uppercased
-	ret
-chill:	ld	a,'-'		; illegal is an '-'
-	ret
-chwild:	ld	a,'%'		; wildcard
-	ret
-
-; Get next non-blank char.
-;
-; On entry: HL -> character string
-; On exit:  HL -> first non-space character in string
-;	    Z flag set if end of string reached
-;
-getnb:	ld	a,(hl)
-	or	a
-	ret	z
-	cp	' '
-	ret	nz
-	inc	hl
-	jr	getnb
-
-; Copy NUL terminated string pointed to by HL to DE
-;
-; Pointers are advanced to allow concatenation.
-; The terminating NUL is copied. Spaces are skipped.
-strcpy:
-s_lo:	ld	a,(hl)
-	cp	' '
-	jr	z,s_sp
-	ld	(de),a
-	or	a
-	ret	z		; end of string
-	inc	hl
-	inc	de
-	jr	s_lo
-s_sp:	xor	a		; space means end too
-	ld	(de),a
-	ret
-
-; return length of NUL terminated string pointed to by HL in A
-strlen:
-	push	bc
-	ld	c,0
-sl_lo:
-	ld	a,(hl)
-	or	a
-	jr	z,sl_12
-	inc	c
-	inc	hl
-	jr	sl_lo
-sl_12:	ld	a,c
-	pop	bc
-	ret
-
 ; return number of available input chars in HL
 char_avail:
 	ld	hl,0
@@ -1788,12 +1682,14 @@ ca_1:	sub	h
 	ld	l,a		; return count and carry clear
 	ret
 
+;*******************************************************************
 ; read one character from stdin
 readchar:
 	call	$TTGC		; get a character
 	ld	(char),a
 	ret
 
+;*******************************************************************
 ; write one char from A to stdout
 writechar:
 	push	hl		; don't change HL
@@ -1802,6 +1698,7 @@ writechar:
 	pop	hl
 	ret
 
+;*******************************************************************
 ; read 128 bytes
 ;
 ; Under RSX280 - returns bytes read in BC and status in HL
@@ -1820,6 +1717,7 @@ read128:
 	pop	de
 	ret
 
+;*******************************************************************
 ; write 128 bytes
 ;
 ; Returns bytes written in BC
@@ -2038,6 +1936,7 @@ m_0:	ld	(hl),0
 ;	jr	z,parm_0
 ;	cp	2		; one parameter?
 ;	jr	z,parm_1	; yes
+
 	ld	ix,(p_argv+2*2)	; point IX to p_argv[2]
 	ld	hl,cpmfcb2	; point HL to second FCB area
 	call	fillfcb		; copy to FCB
@@ -2533,6 +2432,7 @@ op_err:	ld	l,a		; save RSX280 error in errno
 	scf
 	ret
 
+;*******************************************************************
 ; close(int index)
 ;
 ; Close the opened file with the LUN given by index
@@ -2607,6 +2507,7 @@ lun_err:
 	ld	hl,E.INV	; LUN > maximum allowed
 	ret
 
+;*******************************************************************
 ; creat(char *name)
 _creat:
     if 0;DEBUG
@@ -2625,6 +2526,7 @@ _creat:
 	pop	de
 	ret
 
+;*******************************************************************
 ; unlink(char *path)
 _unlink:
     if 0;DEBUG
@@ -2673,6 +2575,7 @@ ul_err:	ld	h,0
 	ld	hl,-1
 	ret
 
+;*******************************************************************
 ; read(int d, char *buf,unsigned nbytes)
 _read:
 
@@ -2727,6 +2630,7 @@ rd_3:	push	ix		; juggle registers
 	scf
 	ret
 
+;*******************************************************************
 ; write(int d, char *buf,unsigned nbytes)
 _write:
 
@@ -2797,6 +2701,61 @@ wr_err:	ld	(errno),hl	; put error code into errno
 
 ;*******************************************************************
 ;
+; record seek (128 byte sector) for read/write random
+;
+; Parameters passed on stack
+;
+; rseek(blk->desc, blk->ranrec, type);
+;       LUN , sector, type
+;
+; Under RSX280 we always do a byte seek
+
+_rseek:	push	hl		; save HL
+	push	de
+	push	bc
+
+	ld	h,0
+	ld	l,(iy+fcblun)	; fetch the LUN
+	; point IX to the RSX280 file storage region
+	call	checklun
+	jr	nc,sk_err	; invalid LUN
+	ld	b,h		; LUN to BC
+	ld	c,l
+	ld	de,FCSIZ+512
+	ld	hl,fsr_1
+rs_1:	dec	bc		; index fsr table by LUN-1
+	ld	a,c
+	or	a
+	jr	z,rs_3
+	add	hl,de
+	jr	rs_1
+rs_3:	push	hl
+	pop	ix		; IX now points to this file's FSR
+
+	ldw	hl,(iy+fcbran)	; fetch desired sector from CP/M  FCB
+	ldw	(iy+fcbrec),hl	; set it a the currect record in the FCB
+
+	; convert sector offset to byte (*128)
+	; and load into 32-bit byte position
+	; in the DEBC registers
+
+	multuw	hl,128		; multiply returns DEHL
+	ld	b,h		;  but fseek needs DEBC
+	ld	c,l
+	call	FSEEK
+	jr	nc,rs_2		; no errors?
+
+	ld	h,0		; yes, error code in A
+	ld	l,a
+sk_err:	ld	(errno),hl      ; save it in errno
+
+rs_2:	pop	bc
+	pop	de
+	pop	hl		; restore HL
+	ret
+
+;*******************************************************************
+;
 ; BDOS function dispatch table (keep this in cseg)
 	cseg
 
@@ -2852,14 +2811,10 @@ maxbdosfn equ	(($-bdostable)/2)-1 ; should be 40 (028h)
 	cseg
 
 tobios	equ	(cpmbios-cpmtpa)-($-tpa)
-tobios	equ	(cpmbios-cpmtpa)-($-tpa)
 
-tobios	equ	(cpmbios-cpmtpa)-($-tpa)
-tobios	equ	(cpmbios-cpmtpa)-($-tpa)
-tobios	equ	(cpmbios-cpmtpa)-($-tpa)
-  if tobios and 8000h	; negative (sign bit on)
+  if tobios and 8000h		; negative (sign bit on)
     if2
-	.printx /ERROR: BDOS area overflowed into BIOS area/
+	.printx /*** ERROR: BDOS area overflowed into BIOS area ***/
     endif
   else
 	defs	tobios
@@ -2987,6 +2942,159 @@ cla_3:	ld	a,(idxopn)	; close INDEXF.SYS
 	call	FCLOSE
 	xor	a
 	ld	(idxopn),a
+	ret
+
+;*******************************************************************
+; Utility routines
+;
+; Convert char in A to uppercase
+UCASE:	cp	'a'
+	ret	c
+	cp	'z'+1
+	ret	nc
+	and	5Fh
+	ret
+
+;*******************************************************************
+; If A contains one of <=>:;_ then set Z flag bit
+delimiter:
+	cp	'<'
+	ret	z
+	cp	'='
+	ret	z
+	cp	'>'
+	ret	z
+	cp	':'
+	ret	z
+	cp	';'
+	ret	z
+	cp	'_'
+	ret
+
+;*******************************************************************
+; Convert CP/M FCB name to RSX280 file name in variable file_name
+; Illegal filename characters are replaced with a dash "-", and
+; a wildcard '?' is translated to a '%'.
+;
+; on entry: IY -> pointer to FCB
+;
+; on exit : HL -> pointer to string.
+;	    DE -> pointer to EOS.
+getname:
+	ld	de,file_name
+	lda	hl,(iy+fcbname)	; get address of name
+	ld	b,8		;  up to 8 characters
+g_l1:	ld	a,(hl)
+	inc	hl
+	or	a		; is it NUL?
+	jr	z,g_l2		; yes
+	cp	' '		; is it blank?
+	jr	z,g_l2		; yes
+	call	chmap		; fix-up for RSX280
+	ld	(de),a
+	inc	de
+	djnz	g_l1
+g_l2:
+	lda	hl,(iy+fcbext)	; get address of file extension
+	ld	a,(hl)
+	cp	' '		; is it blank?
+	jr	z,g_l4		; no extension if blank
+	ld	a,'.'		; add a '.'
+	ld	(de),a
+	inc	de
+	ld	b,3		; now up to 3 characters
+g_l3:
+	ld	a,(hl)
+	inc	hl
+	or	a		; NUL?
+	jr	z,g_l4
+	cp	' '		; blank?
+	jr	z,g_l4
+	call	chmap		; fix-up for RSX280
+	ld	(de),a
+	inc	de
+	djnz	g_l3
+g_l4:
+	xor	a
+	ld	(de),a		; terminate the string with a NUL
+	ld	hl,file_name	; return pointer to name
+	ret
+
+;*******************************************************************
+; convert illegal RSX280 filename character to a '-'.
+; (only A..Z and 0..9 are allowed), and a wildcard '?'
+; to a '%'.
+chmap:
+	and	07Fh		; no parity, 7-bit only
+	cp	'?'
+	jr	z,chwild
+	cp	'0'
+	jr	c,chill
+	cp	'9'+1
+	ret	c		; '0'-'9' is OK
+	cp	'A'
+	jr	c,chill
+	cp	'Z'+1
+	ret	c		; 'A'-'Z' is OK
+	cp	'a'
+	jr	c,chill
+	cp	'z'+1
+	jr	nc,chill
+	sub	a,32		; 'a'-'z' is uppercased
+	ret
+chill:	ld	a,'-'		; illegal is an '-'
+	ret
+chwild:	ld	a,'%'		; wildcard
+	ret
+
+;*******************************************************************
+; Get next non-blank char.
+;
+; On entry: HL -> character string
+; On exit:  HL -> first non-space character in string
+;	    Z flag set if end of string reached
+;
+getnb:	ld	a,(hl)
+	or	a
+	ret	z
+	cp	' '
+	ret	nz
+	inc	hl
+	jr	getnb
+
+;*******************************************************************
+; Copy NUL terminated string pointed to by HL to DE
+;
+; Pointers are advanced to allow concatenation.
+; The terminating NUL is copied. Spaces are skipped.
+strcpy:
+s_lo:	ld	a,(hl)
+	cp	' '
+	jr	z,s_sp
+	ld	(de),a
+	or	a
+	ret	z		; end of string
+	inc	hl
+	inc	de
+	jr	s_lo
+s_sp:	xor	a		; space means end too
+	ld	(de),a
+	ret
+
+;*******************************************************************
+; return length of NUL terminated string pointed to by HL in A
+strlen:
+	push	bc
+	ld	c,0
+sl_lo:
+	ld	a,(hl)
+	or	a
+	jr	z,sl_12
+	inc	c
+	inc	hl
+	jr	sl_lo
+sl_12:	ld	a,c
+	pop	bc
 	ret
 
 

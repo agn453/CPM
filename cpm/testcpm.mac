@@ -2,7 +2,7 @@
 ;
 ; A simple CP/M program for testing
 ;
-	.z80
+	.z280
 
 bdos	equ	5
 ddma	equ	0080h	; default DMA address
@@ -18,7 +18,7 @@ start:	ld	hl,0
 	call	hlhex
 	call	crlf
 
-	call	dump_pg0
+;	call	dump_pg0
 
 	ld	hl,ddma	; any parameters?
 	ld	a,(hl)
@@ -76,6 +76,8 @@ gotc:	push	af
 	jp	crlf		; new line and exit
 
 searchtest:
+	ldw	(found),0	; zero count
+
 	ld	c,26		; setdma
 	ld	de,ddma
 	call	bdos
@@ -83,6 +85,11 @@ searchtest:
 	ld	c,17		; search first
 	ld	de,fcb1		; use default FCB
 	call	bdos
+
+	cp	255		; not found?
+	jr	z,notfound
+
+	incw	(found)
 
 	push	af		; save result
 
@@ -110,8 +117,14 @@ p_nam:	ld	a,(hl)
 	call	crlf
 	call	dump_dma
 
+srchnext:
 	ld	c,18		; now do a search_next
 	call	bdos
+
+	cp	255
+	jp	z,srchdone	; no more
+
+	incw	(found)
 
 	push	af
 	ld	c,9
@@ -121,9 +134,23 @@ p_nam:	ld	a,(hl)
 	call	ahex
 	call	crlf
 	call	dump_dma
+	call	crlf
+	jr	srchnext
 
-	; new line and exit
+srchdone:
+	ld	c,9
+	ld	de,foundmsg
+	call	bdos
+	ld	hl,(found)
+	call	hlhex
+	jp	crlf
 
+notfound:
+	ld	c,9
+	ld	de,notfndmsg
+	jp	bdos
+
+; new line and exit
 crlf:	push	hl
 	push	de
 	push	bc
@@ -283,4 +310,13 @@ srchmsg:
 resultmsg:
 	defb	13,10,'Result code=$'
 
+notfndmsg:
+	defb	13,10,'Search returned NOT FOUND',13,10,'$'
+
+foundmsg:
+	defb	13,10,'Search matches $'
+
+found:	defs	2
+
 	end	start
+
