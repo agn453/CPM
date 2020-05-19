@@ -168,8 +168,8 @@ dircnt	equ	maxdir/dirspr	; number of directory sectors
 
 ; magic number of open file
 ;
-; The emulator writes this to s2 byte in a CP/M FCB when a file is open
-; (along withe the LUN of the open file in the s1 byte).
+; The emulator writes this to the CP/M FCB when a file is open
+; (along withe the LUN of the open file).
 MAGIC	equ	05Eh
 
 ; RSX280 Logical Unit Numbers
@@ -756,7 +756,7 @@ search_first:
 	call	FCLOSE		;  any recent updates
 	jr	nc,sf_1
 
-  if DEBUG
+  if 0;DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Close dir',0
@@ -786,11 +786,11 @@ sf_2:	ld	hl,cdname
 	jp	c,sf_err
 
 	ld	ix,fsrdir
-	ld	(ix+FC.MODE),1 shl FM.RD	; Read mode
+	ld	(ix+FC.MODE),flag_r	; Read mode
 	call	FOPEN		; open directory
 	jr	nc,sf_4
 
-  if DEBUG
+  if 0;DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Open dir',0
@@ -799,7 +799,7 @@ sf_2:	ld	hl,cdname
 	jp	c,sf_err
 
 sf_4:
-	ld	a,1		; mark directory file as open
+	ld	a,00000001b	; mark directory file as open
 	ld	(diropn),a	;  and not end of file (bit 7 off)
 
 	ld	a,(idxopn)	; is INDEXF.SYS open?
@@ -810,7 +810,7 @@ sf_4:
 	call	FCLOSE		;  refresh any updated files
 	jr	nc,sf_6
 
-  if DEBUG
+  if 0;DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Close idx',0
@@ -824,11 +824,11 @@ sf_6:	ld	hl,idxfn	; parse INDEXF.SYS filename
 	jp	c,sf_err
 
 	ld	ix,fsridx
-	ld	(ix+FC.MODE),1 shl FM.RD	; Read mode
+	ld	(ix+FC.MODE),flag_r	; Read mode
 	call	FOPEN		; open INDEXF.SYS
 	jr	nc,sf_7
 
-  if DEBUG
+  if 0;DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Open idx',0
@@ -837,7 +837,7 @@ sf_6:	ld	hl,idxfn	; parse INDEXF.SYS filename
 	jp	sf_err
 
 sf_7:
-	ld	a,1
+	ld	a,00000001b
 	ld	(idxopn),a	; remember INDEXF.SYS is open
 
 	ld	c,0		; length assuming '?' true
@@ -848,7 +848,7 @@ sf_7:
 
 	; IY also points to CP/M FCB
 	ld	a,(iy+fcbex)	; get extent from CP/M FCB
-	cp	'?'		; if it is wildcard then clear
+	cp	'?'		; if extent is wildcard then clear
 	jr	z,sf_9		; module number (s2 byte)
 	ld	(iy+fcbmodnum),0
 
@@ -859,7 +859,7 @@ sf_9:	; CP/M 2.2 BDOS calls RESELECT here to select the drive and user
 
 qselect:
   if DEBUG
-	push	bc
+	push	bc		; show match length
 	call	$PSTR
 	defb	'Srch-I-Matchlen=',0
 	ld	a,c
@@ -885,11 +885,11 @@ move9:	ld	hl,(aret)
 	ret
 
 sf_err:
-	ld	h,0
+	ld	h,0		; Search encountered an error
 	ld	l,a
-	ld	(errno),hl
+	ld	(errno),hl	; save the RSX280 error code
   if DEBUG
-	push	af
+	push	af		; show the error code
 	call	$PSTR
 	defb	'S1st-E-Err=',0
 	pop	af
@@ -902,16 +902,22 @@ sf_err:
 ;
 search_next:
   if DEBUG
-	call	$PSTR
+	call	$PSTR		; show we've been called
 	defb	'Snxt',0
   endif ;DEBUG
 
 	ld	iy,(searcha)	; point to FCB from search_first
+
+  if DEBUG
+	call	dumpfcb
+  endif ;DEBUG
+
 	call	searchn		; search for next match
 	jr	dir_to_user
 	
 ; Search for directory element of length C. The
-; address of the CP/M FCB is stored at SEARCHA
+; address of the CP/M FCB is saved at SEARCHA for
+; the search_next call to use.
 ;
 search:	ld	a,0FFh
 	ld	(dirloc),a	; assume not found
@@ -960,15 +966,6 @@ search:	ld	a,0FFh
 	jp	sf_err
 
 sf_5:
-
- if 1
-;**Dummy read - otherwise first random read of INDEXF.SYS is wrong record
-	ld	de,idxentry
-	ld	bc,IESZ
-	call	FREAD
-	jp	c,sf_err
- endif ;1
-
 	ld	d,0		; seek to start of
 	ld	e,d		;  index file
 	ld	b,d
@@ -985,6 +982,14 @@ sf_5:
   endif ;DEBUG
 	jp	sf_err
 sf_8:
+
+  if 1
+;**Dummy read - otherwise first random read of INDEXF.SYS is wrong record
+	ld	de,idxentry
+	ld	bc,IESZ
+	call	FREAD
+	jp	c,sf_err
+  endif ;1
 
 	; fall through into search next
 
@@ -1117,7 +1122,7 @@ read_dir:
 	ld	hl,(dcnt)	; increment directory entry count
 	inc	hl
 	ld	(dcnt),hl
-	push	de		; HL = DE-HL
+	push	de		; HL = DE-HL, preserve DE
 	ex	de,hl
 	subw	hl,de
 	pop	de
@@ -1213,10 +1218,9 @@ dbg_1:	ld	a,(hl)
 	or	l
 	jr	nz,rd_nxtd
 
- if 0
 	ld	a,(ix+DE.NAME9)	; don't allow 9-character names
 
-  if DEBUG
+  if 0;DEBUG
 	push	af
 	call	$PSTR
 	defb	'9=',0
@@ -1227,16 +1231,17 @@ dbg_1:	ld	a,(hl)
 	pop	af
   endif ;DEBUG
 
-	cp	' '
-	jr	z,rd_nxtd
- endif ;0
+	cp	' '		;  (it must be a space)
+	jp	nz,rd_nxtd
 
 	ldw	hl,(ix+DE.INDX)	; get file link count
 	ld	a,h
 	or	l		; is it zero?
-	jr	z,rd_nxtd	; yes, skip to next directory entry
+	jp	z,rd_nxtd	; yes, skip to next directory entry
 
 	dec	hl		; it's 1-based inode number
+	ld	(idxrec),hl
+
 	multuw	hl,IESZ		; compute index file position
 				; result in DEHL
 	ld	b,h		; move low 16-bits to BC
@@ -1405,6 +1410,11 @@ rd_ndp:
 	ld	de,(dirrec)	; store directory entry
 	inc	hl		;  number in the first
 	ldw	(hl),de		;  two allocation bytes
+	inc	hl
+	inc	hl
+	ld	de,(idxrec)	; and INDEXF.SYS record entry
+	ldw	(hl),de		;  in the next two allocation
+				;  bytes
 
 rd_next:
 
@@ -2397,6 +2407,7 @@ op_creat:
 	ld	d,a		;  allocate (CDE=0)
 	ld	e,a
 
+	; the file access mode has been set above
 	call	FCREAT		; create a new file
 	jr	op_6
 
@@ -2406,6 +2417,7 @@ op_5:
 	defb	'OPEN-I-Existing file',0
     endif ;DEBUG
 
+	; the file access mode has been set above
 	call	FOPEN		; open existing file
 op_6:	jp	c,op_err
 
@@ -3474,6 +3486,7 @@ dirrec:	defs	2
 idxopn:	defb	0		; INDEXF.SYS file is open flag
 idxentry:
 	defs	IESZ		; index file record
+idxrec:	defs	2
 
 topcom:	defs	2
 
