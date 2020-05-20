@@ -1672,6 +1672,7 @@ writerandom:
 ;*******************************************************************
 ; return number of available input chars in HL
 char_avail:
+	call	$FLUSH		; make sure all is output first
 	ld	hl,0
 	push	de
 	ld	e,EFN_TI
