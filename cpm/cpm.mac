@@ -52,9 +52,10 @@ TRUE	equ	not FALSE
 DBG_CON equ	0001h		; console I/O debug
 DBG_FIO equ	0002h		; file read/write debug
 DBG_SRH	equ	0004h		; search first/next debug
+DBG_SEL	equ	0008h		; disk selection
 DBG_ERR equ	8000h		; error debug
 
-DEBUG	equ	DBG_ERR or DBG_SRH
+DEBUG	equ	DBG_ERR or DBG_SEL ;or DBG_SRH
 
 ;
 ; Include files and externals
@@ -1674,6 +1675,13 @@ writerandom:
 	jp	ret_hl_0
 
 ;*******************************************************************
+; BDOS Get address of allocation vector
+;
+get_alloca:
+	ld	hl,dpb
+	ret
+
+;*******************************************************************
 ; return number of available input chars in HL
 char_avail:
 	call	$FLUSH		; make sure all is output first
@@ -2807,7 +2815,7 @@ bdostable:
 	defw	no_good		; 28 - write protect disk
 	defw	ret_hl_0	; 29 - get read-only vector
 	defw	no_good		; 30 - set file attributes
-	defw	no_good		; 31 - get addr(dpb params)
+	defw	get_alloca	; 31 - get addr(dpb params)
 	defw	ret_hl_0	; 32 - set/get user code
 	defw	readrandom	; 33 - read random
 	defw	writerandom	; 34 - write random
@@ -2884,7 +2892,7 @@ _conist:
 
 ; BIOS select disk
 _seldsk:
-  if DEBUG
+  if DBG_SEL and DEBUG
 	push	bc
 	call	$PSTR
 	defb	'SELDSK',0
