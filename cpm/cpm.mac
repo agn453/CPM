@@ -49,7 +49,12 @@
 FALSE	equ	0
 TRUE	equ	not FALSE
 
-DEBUG	equ	TRUE		; output debugging messages
+DBG_CON equ	0001h		; console I/O debug
+DBG_FIO equ	0002h		; file read/write debug
+DBG_SRH	equ	0004h		; search first/next debug
+DBG_ERR equ	8000h		; error debug
+
+DEBUG	equ	DBG_ERR or DBG_SRH
 
 ;
 ; Include files and externals
@@ -155,11 +160,7 @@ DE.NAME9 equ	DE.NAME+8	; offset for 9th character of filename
 
 empty	equ	0E5h		; deleted or empty directory entry
 recsiz	equ	128		; record size (CP/M sector size)
-  if DEBUG
-maxdir	equ	128	;**temporary while debugging search
-  else
 maxdir	equ	1024		; number of directory entries
-  endif ;DEBUG
 dirlen	equ	32		; directory entry length (CP/M)
 dirspr	equ	recsiz/dirlen	; directory entries per sector
 dskmsk	equ	dirspr-1	; mask for directory entry
@@ -168,8 +169,8 @@ dircnt	equ	maxdir/dirspr	; number of directory sectors
 
 ; magic number of open file
 ;
-; The emulator writes this to the CP/M FCB when a file is open
-; (along withe the LUN of the open file).
+; The emulator writes this to s2 byte in a CP/M FCB when a file is open
+; (along withe the LUN of the open file in the s1 byte).
 MAGIC	equ	05Eh
 
 ; RSX280 Logical Unit Numbers
@@ -185,10 +186,13 @@ LUN_IX	equ	8		; LUN for accessing INDEXF.SYS
 ; Event flags
 EFN_TI	equ	1		; event flag for AST terminal input
 EFN_TO	equ	2		; event flag for console output
-EFN_F	equ	3		; event flag for emulation file I/O
-EFN_SY	equ	4		; event flag for rename/delete I/O
-EFN_D	equ	5		; event flag for directory file
-EFN_IX	equ	6		; event flag for INDEXF.SYS
+EFN_F1	equ	3		; event flag for emulation file LUN1
+EFN_F2	equ	4		; event flag for emulation file LUN2
+EFN_F3	equ	5		; event flag for emulation file LUN3
+EFN_F4	equ	6		; event file for emulation file LUN4
+EFN_SY	equ	7		; event flag for rename/delete I/O
+EFN_D	equ	8		; event flag for directory file
+EFN_IX	equ	9		; event flag for INDEXF.SYS
 
 ; Console terminal queue offsets
 TQ.IP	equ	0		; input pointer
@@ -642,7 +646,7 @@ ff_ewild:
 ; On entry: IY -> pointer to FCB
 ;
 openfile:
-  if 0;DEBUG
+  if DEBUG and DBG_FIO
 	call	$PSTR
 	defb	'BDOS-I-Open FCB at ',0
 	ld	hl,(arg)
@@ -687,7 +691,7 @@ no_good:
 ; On entry: IY -> pointer to FCB
 ;
 makefile:
-  if 0;DEBUG
+  if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'BDOS-MAKEFILE',0
 	call	dumpfcb
@@ -710,7 +714,7 @@ makefile:
 	ld	hl,0
 	ldw	(iy+fcbrec),hl
 	ld	(iy+fcbcr),l
-  if 0;DEBUG
+  if DBG_FIO and DEBUG
 	push	hl
 	call	dumpfcb
 	pop	hl
@@ -740,7 +744,7 @@ closefile:
 ; On entry: IY -> pointer to FCB
 ;
 search_first:
-  if DEBUG
+  if DBG_SRH and DEBUG
 	call	$PSTR
 	defb	'S1st-I-FCB',0
 	call	dumpfcb
@@ -756,7 +760,7 @@ search_first:
 	call	FCLOSE		;  any recent updates
 	jr	nc,sf_1
 
-  if 0;DEBUG
+  if DBG_FIO and DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Close dir',0
@@ -790,7 +794,7 @@ sf_2:	ld	hl,cdname
 	call	FOPEN		; open directory
 	jr	nc,sf_4
 
-  if 0;DEBUG
+  if DBG_FIO and DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Open dir',0
@@ -810,7 +814,7 @@ sf_4:
 	call	FCLOSE		;  refresh any updated files
 	jr	nc,sf_6
 
-  if 0;DEBUG
+  if DBG_FIO and DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Close idx',0
@@ -828,7 +832,7 @@ sf_6:	ld	hl,idxfn	; parse INDEXF.SYS filename
 	call	FOPEN		; open INDEXF.SYS
 	jr	nc,sf_7
 
-  if 0;DEBUG
+  if DBG_FIO and DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Open idx',0
@@ -858,7 +862,7 @@ sf_9:	; CP/M 2.2 BDOS calls RESELECT here to select the drive and user
 	ld	c,fcbnamlen	; length to match
 
 qselect:
-  if DEBUG
+  if DBG_SRH and DEBUG
 	push	bc		; show match length
 	call	$PSTR
 	defb	'Srch-I-Matchlen=',0
@@ -888,7 +892,7 @@ sf_err:
 	ld	h,0		; Search encountered an error
 	ld	l,a
 	ld	(errno),hl	; save the RSX280 error code
-  if DEBUG
+  if DBG_SRH and DEBUG
 	push	af		; show the error code
 	call	$PSTR
 	defb	'S1st-E-Err=',0
@@ -901,14 +905,14 @@ sf_err:
 ; BDOS search next
 ;
 search_next:
-  if DEBUG
+  if DBG_SRH and DEBUG
 	call	$PSTR		; show we've been called
 	defb	'Snxt',0
   endif ;DEBUG
 
 	ld	iy,(searcha)	; point to FCB from search_first
 
-  if DEBUG
+  if DBG_SRH and DEBUG
 	call	dumpfcb
   endif ;DEBUG
 
@@ -935,7 +939,7 @@ search:	ld	a,0FFh
 	ld	(dirrec),de	; directory entry pointer to beginning
 	ld	(dirfsize),de	; clear previous file size too
 
-  if DEBUG
+  if DBG_SRH and DEBUG
 	push	hl		; show DEBC for dir file seek
 	push	bc
 	push	de
@@ -957,7 +961,7 @@ search:	ld	a,0FFh
 	call	FSEEK
 	jr	nc,sf_5
 
-  if DEBUG
+  if DBG_FIO and DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Seek dir',0
@@ -974,7 +978,7 @@ sf_5:
 	call	FSEEK
 	jr	nc,sf_8
 
-  if DEBUG
+  if DBG_FIO and DEBUG
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Seek idx',0
@@ -983,7 +987,7 @@ sf_5:
 	jp	sf_err
 sf_8:
 
-  if 1
+  if 0
 ;**Dummy read - otherwise first random read of INDEXF.SYS is wrong record
 	ld	de,idxentry
 	ld	bc,IESZ
@@ -1122,7 +1126,7 @@ read_dir:
 	ld	hl,(dcnt)	; increment directory entry count
 	inc	hl
 	ld	(dcnt),hl
-	push	de		; HL = DE-HL, preserve DE
+	push	de		; HL = DE-HL
 	ex	de,hl
 	subw	hl,de
 	pop	de
@@ -1188,7 +1192,7 @@ rd_n1:
 
 	ld	ix,direntry	; point to directory file entry
 
-  if DEBUG
+  if DBG_SRH and DEBUG
 	push	bc
 	push	hl
 	call	$PSTR
@@ -1220,7 +1224,7 @@ dbg_1:	ld	a,(hl)
 
 	ld	a,(ix+DE.NAME9)	; don't allow 9-character names
 
-  if 0;DEBUG
+  if 0 and DBG_SRH and DEBUG
 	push	af
 	call	$PSTR
 	defb	'9=',0
@@ -1247,7 +1251,7 @@ dbg_1:	ld	a,(hl)
 	ld	b,h		; move low 16-bits to BC
 	ld	c,l
 
-  if DEBUG
+  if DBG_SRH and DEBUG
 	push	hl
 	push	bc
 	push	de
@@ -1274,7 +1278,7 @@ dbg_1:	ld	a,(hl)
 	call	FREAD
 	jp	c,rd_end_dir	; error reading index is also the end
 
-  if DEBUG
+  if DBG_SRH and DEBUG
 	push	hl
 	push	bc
 	call	$PSTR
@@ -1360,7 +1364,7 @@ sz_dehl:
 
 rd_more:
 
-  if 0;DEBUG
+  if 0 and DBG_SRH and DEBUG
 	call	$PSTR
 	defb	'size=',0
 	ld	hl,(dirfsize)
@@ -1418,7 +1422,7 @@ rd_ndp:
 
 rd_next:
 
-  if 0;DEBUG
+  if 0 and DBG_SRH and DEBUG
 	push	bc
 	push	hl
 	call	$PSTR
@@ -1483,7 +1487,7 @@ delete:
 ;
 rename:
 	push	iy		; save pointer to CP/M FCB
-  if 0;DEBUG
+  if DBG_FIO and DEBUG
 	call	dumpfcb
   endif ;DEBUG
 	ld	a,16
@@ -1528,7 +1532,7 @@ rename:
 	jr	c,rn_err
 
 rn_3:
-  if 0;DEBUG
+  if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'RENAME-I-from "',0
 	ld	hl,oldnam
@@ -1560,7 +1564,7 @@ rn_3:
 rn_err:
 	ld	h,0
 	ld	l,a
-  if 0;DEBUG
+  if DBG_ERR and DEBUG
 	call	$PSTR
 	defb	'RENAME-E-Error=',0
 	call	$HLHEX
@@ -1600,7 +1604,7 @@ r_ok:
 	jp	ret_hl_0	; no errors
 
 r_eof:
-  if 0;DEBUG
+  if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'EOF-I-Reading LUN='
 	ld	h,0
@@ -1866,7 +1870,7 @@ ldcom2:	pop	de		; clean up stack (byte count)
 	call	_close		; (LUN is still on the stack)
 	pop	de		; discard it
 	; .COM file loaded
-    if 0;DEBUG
+    if 0 and DEBUG
 	call	$PSTR
 	defb	'CPM-I-Program loaded 0100-',0
 	ld	hl,(topcom)
@@ -1969,7 +1973,7 @@ parm_0:
 	ld	(cpmiob),hl	; IOBYTE and current drive
 				;  both zero (only drive A:)
 
-  if 0;DEBUG
+  if 0 and DEBUG
 	push	hl
 	call	dumppg0		; show page zero to see it's all OK
 	pop	hl
@@ -2087,7 +2091,7 @@ arg_2:	ld	ix,p_argv	; IX points to argv[0]
 	ld	d,0		; DE is argc
 	ld	e,c
 
-  if 0;DEBUG
+  if 0 and DEBUG
 	call	$PSTR
 	defb	'argv',CR,LF,0
 	ldw	hl,(ix+0)
@@ -2313,7 +2317,7 @@ $EXIT:	call	close_all	; close all files
 ; Returns the LUN of the open file in HL (or -1 on error)
 ;
 _open:
-    if 0;DEBUG
+    if 0 and DEBUG
 	call	$PSTR
 	defb	'OPEN-I-File "',0
 	ldw	hl,(sp+4)
@@ -2334,10 +2338,11 @@ op_0:	bit	0,(hl)
 	cp	luntbsz+1
 	jr	c,op_0
 
-    if DEBUG
+    if 1
 	call	$PSTR
 	defb	'OPEN-F-No free LUN',0
-    endif ;DEBUG
+    endif ;1
+
 	ld	a,E.NOBUF	; use "Out of disk buffers" error
 	jp	op_err
 
@@ -2346,7 +2351,7 @@ op_1:	ld	(opnltbe),hl	; save in case open fails
 	; LUN is in BC
 	ld	(opnlun),bc	; save it
 
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	push	bc
 	call	$PSTR
 	defb	'OPEN-I-Using LUN ',0
@@ -2379,7 +2384,7 @@ op_3:	push	hl
 	pop	ix
 	jr	nc,op_4		; it parsed correctly
 
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	push	af
 	call	$PSTR
 	defb	'OPEN-F-Parse failed',0
@@ -2398,7 +2403,7 @@ op_4:	ldw	hl,(sp+2)	; is it an open for Read?
 	jr	op_err
 
 op_creat:
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'OPEN-I-Create file',0
     endif ;DEBUG
@@ -2408,21 +2413,19 @@ op_creat:
 	ld	d,a		;  allocate (CDE=0)
 	ld	e,a
 
-	; the file access mode has been set above
 	call	FCREAT		; create a new file
 	jr	op_6
 
 op_5:
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'OPEN-I-Existing file',0
     endif ;DEBUG
 
-	; the file access mode has been set above
 	call	FOPEN		; open existing file
 op_6:	jp	c,op_err
 
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'OPEN-I-File opened',CR,LF,0
     endif ;DEBUG
@@ -2434,11 +2437,11 @@ op_6:	jp	c,op_err
 op_err:	ld	l,a		; save RSX280 error in errno
 	ld	h,0
 	ld	(errno),hl
-    if 0;DEBUG
+    if 1
 	call	$PSTR
 	defb	'OPEN-E-Error=',0
 	call	$HLHEX
-    endif ;DEBUG
+    endif
 	ld	hl,(opnltbe)	; open failed - reset LUN
 	res	0,(hl)		;  in-use entry
 	ld	hl,-1
@@ -2451,7 +2454,7 @@ op_err:	ld	l,a		; save RSX280 error in errno
 ; Close the opened file with the LUN given by index
 ;
 _close:
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'CLOSE-I-LUN=',0
 	ldw	hl,(sp+2)
@@ -2495,7 +2498,7 @@ cl_3:	push	hl
 	ld	h,0
 
 cl_err:
-    if 0;DEBUG
+    if DBG_ERR and DEBUG
 	push	af
 	call	$PSTR
 	defb	'CLOSE-E-Error',0
@@ -2523,7 +2526,7 @@ lun_err:
 ;*******************************************************************
 ; creat(char *name)
 _creat:
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'CREAT-I-file "',0
 	ldw	hl,(sp+2)
@@ -2542,7 +2545,7 @@ _creat:
 ;*******************************************************************
 ; unlink(char *path)
 _unlink:
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'UNLINK-I-Delete file "',0
 	ldw	hl,(sp+2)
@@ -2592,7 +2595,7 @@ ul_err:	ld	h,0
 ; read(int d, char *buf,unsigned nbytes)
 _read:
 
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'READ-I-LUN=',0
 	ldw	hl,(sp+6)
@@ -2647,7 +2650,7 @@ rd_3:	push	ix		; juggle registers
 ; write(int d, char *buf,unsigned nbytes)
 _write:
 
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'WRITE-I-LUN=',0
 	ldw	hl,(sp+6)
@@ -2691,7 +2694,7 @@ wr_3:	push	ix		; juggle registers
 	call	FWRITE
 	; number of bytes written is returned in BC, CY set on error
 
-    if 0;DEBUG
+    if DBG_FIO and DEBUG
 	push	af
 	push	bc
 	call	$PSTR
@@ -3580,10 +3583,10 @@ kbchar:	defb	0
 ; Note: The file access mode bits are overwritten by the _open
 ; routine and we use a common event flag for access to all files
 
-fsr_1:	FSR$	FDB_F1,<1 SHL FM.RD>,LUN_F1,EFN_F
-fsr_2:	FSR$	FDB_F2,<1 SHL FM.WR>,LUN_F2,EFN_F
-fsr_3:	FSR$	FDB_F3,<1 SHL FM.WR>,LUN_F3,EFN_F
-fsr_4:	FSR$	FDB_F4,<1 SHL FM.WR>,LUN_F4,EFN_F
+fsr_1:	FSR$	FDB_F1,<1 SHL FM.RD>,LUN_F1,EFN_F1
+fsr_2:	FSR$	FDB_F2,<1 SHL FM.WR>,LUN_F2,EFN_F2
+fsr_3:	FSR$	FDB_F3,<1 SHL FM.WR>,LUN_F3,EFN_F3
+fsr_4:	FSR$	FDB_F4,<1 SHL FM.WR>,LUN_F4,EFN_F4
 
 ; Directory file
 fsrdir:	FSR$	FDB_D,<1 SHL FM.RD>,LUN_D,EFN_D

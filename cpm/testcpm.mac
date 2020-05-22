@@ -78,21 +78,6 @@ gotc:	push	af
 searchtest:
 	ldw	(found),0	; zero count
 
-	ld	c,26		; setdma
-	ld	de,ddma
-	call	bdos
-
-	ld	c,17		; search first
-	ld	de,fcb1		; use default FCB
-	call	bdos
-
-	cp	255		; not found?
-	jr	z,notfound
-
-	incw	(found)
-
-	push	af		; save result
-
 	ld	c,9
 	ld	de,srchmsg
 	call	bdos
@@ -109,6 +94,20 @@ p_nam:	ld	a,(hl)
 	djnz	p_nam
 	call	crlf
 
+	ld	c,26		; setdma
+	ld	de,ddma
+	call	bdos
+
+	ld	c,17		; search first
+	ld	de,fcb1		; use default FCB
+	call	bdos
+
+	cp	255		; not found?
+	jr	z,notfound
+
+	incw	(found)
+
+	push	af		; save result
 	ld	c,9		; show result of search_first
 	ld	de,resultmsg
 	call	bdos
@@ -308,13 +307,14 @@ srchmsg:
 	defb	13,10,'Search test - looking for file $'
 
 resultmsg:
+	defb	13,10,'******************************************************'
 	defb	13,10,'Result code=$'
 
 notfndmsg:
 	defb	13,10,'Search returned NOT FOUND',13,10,'$'
 
 foundmsg:
-	defb	13,10,'Search matches $'
+	defb	13,10,'Search found matches $'
 
 found:	defs	2
 
