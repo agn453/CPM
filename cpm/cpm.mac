@@ -568,7 +568,7 @@ notbacksp:
 ;
 fillfcb:
 	ld	(hl),0		; always the current drive
-	inc	hl
+	inc	hl		; advance HL to fcbname
 	push	hl		; save and init with spaces
 	ld	b,8+3		;  to simplify the copy
 	ld	a,' '
@@ -577,10 +577,11 @@ ff_blnk:
 	inc	hl
 	djnz	ff_blnk
 
-	pop	hl		; restore pointer to FCB
+	pop	hl		; restore pointer to fcbname
 
 	ld	b,8		; name part is up to 8 chars
 ff_nam:	ld	a,(ix+0)
+	inc	ix
 	or	a		; end of string?
 	ret	z
 	cp	'.'		; filename delimiter
@@ -590,10 +591,13 @@ ff_nam:	ld	a,(ix+0)
 	cp	'*'		; wildcard?
 	jr	z,ff_nwild
 	ld	(hl),a		; store in FCB
-	inc	ix
 	inc	hl
 	djnz	ff_nam
-ff_skp:	ld	a,(ix+0)	; skip rest of name part
+
+	; fall through here if name > 8 chars
+ff_skp:
+	ld	a,(ix+0)	; skip rest of name part
+	inc	ix
 	or	a
 	ret	z		; end of string - done
 	cp	'.'
@@ -601,27 +605,33 @@ ff_skp:	ld	a,(ix+0)	; skip rest of name part
 	call	delimiter
 	ret	z		; delimiter - done
 	jr	ff_skp
+
+	; wildcard to rest of fcbname
 ff_nwild:
-	ld	(hl),'?'
-	inc	hl
+	ld	(hl),'?'	; fill rest of filename
+	inc	hl		;  with '?'
 	djnz	ff_nwild
-ff_nsk:	inc	ix
-	ld	a,(ix+0)	; skip until '.' or eos
+
+	; advance in filename until '.' or end
+ff_nsk:	ld	a,(ix+0)	; skip until '.' or eos
+	inc	ix
 	or	a
 	ret	z
 	cp	'.'
 	jr	nz,ff_nsk
-ff_ext:	inc	ix		; advance past the '.' or '*'
-	ld	a,b
+
+ff_ext:	ld	a,b
 	or	a		; all 8 characters?
-	jr	z,ff_exte
-ff_adv	inc	hl
-	djnz	ff_adv		; point to ext part
+	jr	z,ff_exte	; yes
+
+ff_adv	inc	hl		; no advance to fcbext
+	djnz	ff_adv
+
 ff_exte:
-	ld	b,3
-	inc	ix		; advance past the '.'
+	ld	b,3		; now we do fcbext
 ff_enxt:
 	ld	a,(ix+0)
+	inc	ix
 	or	a
 	ret	z		; end of string
 	call	delimiter
@@ -629,13 +639,13 @@ ff_enxt:
 	cp	'*'		; wildcard ext?
 	jr	z,ff_ewild
 	ld	(hl),a
-	inc	ix
 	inc	hl
 	djnz	ff_enxt
 	ret
+
 ff_ewild:
-	ld	(hl),'?'
-	inc	hl
+	ld	(hl),'?'	; wildcard for rest
+	inc	hl		;  of fcbext
 	djnz	ff_ewild
 	ret
 
@@ -1819,6 +1829,10 @@ reentry:
 	ld	(argc),hl	; save argc
 
 	ld	hl,(p_argv)	; pointer to argv[0]
+	call	strlen		; is it > 8 chars?
+	cp	8+1
+	jr	nc,notfnd	; yes, treat as error
+
 	ld	de,COMFCB
 	call	strcpy		; copy it into filename
 	ld	hl,DOTCOM
@@ -2317,7 +2331,7 @@ $EXIT:	call	close_all	; close all files
 ; Returns the LUN of the open file in HL (or -1 on error)
 ;
 _open:
-    if 0 and DEBUG
+    if 0;DEBUG
 	call	$PSTR
 	defb	'OPEN-I-File "',0
 	ldw	hl,(sp+4)
@@ -2982,8 +2996,7 @@ delimiter:
 
 ;*******************************************************************
 ; Convert CP/M FCB name to RSX280 file name in variable file_name
-; Illegal filename characters are replaced with a dash "-", and
-; a wildcard '?' is translated to a '%'.
+; Illegal filename characters are replaced with a dash "-"
 ;
 ; on entry: IY -> pointer to FCB
 ;
@@ -3031,12 +3044,9 @@ g_l4:
 
 ;*******************************************************************
 ; convert illegal RSX280 filename character to a '-'.
-; (only A..Z and 0..9 are allowed), and a wildcard '?'
-; to a '%'.
+; (only A..Z and 0..9 are allowed).
 chmap:
 	and	07Fh		; no parity, 7-bit only
-	cp	'?'
-	jr	z,chwild
 	cp	'0'
 	jr	c,chill
 	cp	'9'+1
@@ -3052,8 +3062,6 @@ chmap:
 	sub	a,32		; 'a'-'z' is uppercased
 	ret
 chill:	ld	a,'-'		; illegal is an '-'
-	ret
-chwild:	ld	a,'%'		; wildcard
 	ret
 
 ;*******************************************************************
@@ -3093,6 +3101,7 @@ s_sp:	xor	a		; space means end too
 ;*******************************************************************
 ; return length of NUL terminated string pointed to by HL in A
 strlen:
+	push	hl
 	push	bc
 	ld	c,0
 sl_lo:
@@ -3104,6 +3113,7 @@ sl_lo:
 	jr	sl_lo
 sl_12:	ld	a,c
 	pop	bc
+	pop	hl
 	ret
 
 
