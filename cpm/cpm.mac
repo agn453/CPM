@@ -52,10 +52,9 @@ TRUE	equ	not FALSE
 DBG_CON equ	0001h		; console I/O debug
 DBG_FIO equ	0002h		; file read/write debug
 DBG_SRH	equ	0004h		; search first/next debug
-DBG_SEL	equ	0008h		; disk selection
 DBG_ERR equ	8000h		; error debug
 
-DEBUG	equ	DBG_ERR or DBG_SEL ;or DBG_SRH
+DEBUG	equ	DBG_ERR ;or DBG_SRH
 
 ;
 ; Include files and externals
@@ -157,8 +156,6 @@ fcblun	equ	28		; file LUN
 fcbmagic equ	29		; set to magic number if file open
 fcbrec	equ	30		; RSX280 record counter read/write word
 
-DE.NAME9 equ	DE.NAME+8	; offset for 9th character of filename
-
 empty	equ	0E5h		; deleted or empty directory entry
 recsiz	equ	128		; record size (CP/M sector size)
 maxdir	equ	1024		; number of directory entries
@@ -170,8 +167,8 @@ dircnt	equ	maxdir/dirspr	; number of directory sectors
 
 ; magic number of open file
 ;
-; The emulator writes this to s2 byte in a CP/M FCB when a file is open
-; (along withe the LUN of the open file in the s1 byte).
+; The emulator writes this to the CP/M FCB when a file is open
+; (along with the RSX280 LUN of the open file).
 MAGIC	equ	05Eh
 
 ; RSX280 Logical Unit Numbers
@@ -181,7 +178,7 @@ LUN_F3	equ	3		; emulator file access LUN #3
 LUN_F4	equ	4		; emulator file access LUN #4
 LUN_TI	equ	5		; terminal LUN (TI:)
 LUN_SY	equ	6		; LUN for rename/delete file
-LUN_D	equ	7		; LUN for directory file
+LUN_D	equ	7		; LUN for user's directory file
 LUN_IX	equ	8		; LUN for accessing INDEXF.SYS
 
 ; Event flags
@@ -573,7 +570,7 @@ fillfcb:
 	ld	(hl),0		; always the current drive
 	inc	hl
 	push	hl		; save and init with spaces
-	ld	b,8+3
+	ld	b,8+3		;  to simplify the copy
 	ld	a,' '
 ff_blnk:
 	ld	(hl),a
@@ -622,6 +619,7 @@ ff_adv	inc	hl
 	djnz	ff_adv		; point to ext part
 ff_exte:
 	ld	b,3
+	inc	ix		; advance past the '.'
 ff_enxt:
 	ld	a,(ix+0)
 	or	a
@@ -745,7 +743,7 @@ closefile:
 ; On entry: IY -> pointer to FCB
 ;
 search_first:
-  if DBG_SRH and DEBUG
+  if 0;DBG_SRH and DEBUG
 	call	$PSTR
 	defb	'S1st-I-FCB',0
 	call	dumpfcb
@@ -906,14 +904,14 @@ sf_err:
 ; BDOS search next
 ;
 search_next:
-  if DBG_SRH and DEBUG
+  if 0;DBG_SRH and DEBUG
 	call	$PSTR		; show we've been called
 	defb	'Snxt',0
   endif ;DEBUG
 
 	ld	iy,(searcha)	; point to FCB from search_first
 
-  if DBG_SRH and DEBUG
+  if 0;DBG_SRH and DEBUG
 	call	dumpfcb
   endif ;DEBUG
 
@@ -1219,23 +1217,13 @@ dbg_1:	ld	a,(hl)
 
 	ld	hl,(ix+DE.VER)	; only use version 1 files
 	dec	hl
-	ld	a,h
+	ld	a,h		; is version-1 zero?
 	or	l
 	jr	nz,rd_nxtd
 
-	ld	a,(ix+DE.NAME9)	; don't allow 9-character names
+DE.NAME9 equ	DE.NAME+8	; offset for 9th character of filename
 
-  if 0 and DBG_SRH and DEBUG
-	push	af
-	call	$PSTR
-	defb	'9=',0
-	pop	af
-	push	af
-	call	$AHEX
-	call	$CRLF
-	pop	af
-  endif ;DEBUG
-
+	ld	a,(ix+DE.NAME+8) ; don't allow 9-character names
 	cp	' '		;  (it must be a space)
 	jp	nz,rd_nxtd
 
@@ -1292,8 +1280,11 @@ dbg_1:	ld	a,(hl)
   endif ;DEBUG
 
 	ld	ix,idxentry	; is it a file?
-	bit	FA.FILE,(ix+IE.ATTR)
-	jp	nz,rd_nxtd	; no, read next dir entry
+	ld	a,(ix+IE.ATTR)	; get the attributes
+	and	FA.FILE or FA.CTG ; a file or contiguous
+;	bit	FA.FILE,(ix+IE.ATTR)
+;	jp	nz,rd_nxtd	; no, read next dir entry
+	jp	z,rd_nxtd	; no, read next dir entry
 
 	ldw	hl,(ix+IE.LCNT)	; if link count is zero
 	ld	a,h		;  this file has been deleted
@@ -1681,6 +1672,10 @@ get_alloca:
 	ld	hl,dpb
 	ret
 
+get_alv:
+	ld	hl,alv
+	ret
+
 ;*******************************************************************
 ; return number of available input chars in HL
 char_avail:
@@ -1907,7 +1902,7 @@ ldcom2:	pop	de		; clean up stack (byte count)
 
 m_33:	ld	bc,0		; length counter
 	push	bc
-	ld	de,cpmdma+2	; CPM command line buffer
+	ld	de,cpmdma+1	; CPM command line buffer
 	push	hl		; save argv pointer
 m_3:	pop	hl		; hl pointer to argv
 	inc	hl
@@ -1938,11 +1933,8 @@ m_55:	pop	hl		; forget argv pointer
 	ld	(de),a		; terminate the string
 	ld	a,c		; get length
 	ld	(cpmdma),a
-	ld	a,' '
-	ld	(cpmdma+1),a
 m_2:
-	ld	hl,cpmdma	; set default DMA address
-	ld	(dmaadr),hl
+	call	reset_dma	; set default DMA address
 
 	; now set-up the CP/M default
 	; File Control Block at 005Ch
@@ -1981,7 +1973,7 @@ parm_0:
 	ld	(cpmiob),hl	; IOBYTE and current drive
 				;  both zero (only drive A:)
 
-  if 0 and DEBUG
+  if DBG_SRH and DEBUG
 	push	hl
 	call	dumppg0		; show page zero to see it's all OK
 	pop	hl
@@ -2811,7 +2803,7 @@ bdostable:
 	defw	ret_hl_1	; 24 - get login vector
 	defw	ret_hl_0	; 25 - get current disk
 	defw	set_dma		; 26 - set disk DMA address
-	defw	no_good		; 27 - get allocation vector
+	defw	get_alv		; 27 - get allocation vector
 	defw	no_good		; 28 - write protect disk
 	defw	ret_hl_0	; 29 - get read-only vector
 	defw	no_good		; 30 - set file attributes
@@ -2892,13 +2884,6 @@ _conist:
 
 ; BIOS select disk
 _seldsk:
-  if DBG_SEL and DEBUG
-	push	bc
-	call	$PSTR
-	defb	'SELDSK',0
-	pop	bc
-  endif ;DEBUG
-
 	ld	hl,0		; assume error return value
 	ld	a,c		; only a single drive A:
 	or	a
@@ -3306,7 +3291,7 @@ dumpfcb:
 	ret
     endif
 
-    if 0
+    if 1
 dumppg0:
 	push	bc
 	push	hl
@@ -3511,18 +3496,19 @@ curtrk:	defw	0		; scratchpad - current track
 currec:	defw	0		; scratchpad - current record
 buffa:	defw	bufdir		; pointer to directory sector buffer
 	defw	dpb		; disk parameter header
-	defw	0,0		; no check vector or allocation vector
+	defw	0		; no check vector
+	defw	alv		; allocation vector
 
 dpb:
-sectpt:	defw	1024		; sectors per track, 64 tracks
-blkshf:	defb	5		; block shift factor (block size 4096)
-blkmsk:	defb	31		; block mask
-extmsk:	defb	1		; extent mask
-maxall:	defw	2048-1		; dsm (disk size in 4K blocks)-1
-dirmax:	defw	maxdir-1	; drm (1024 dir entries)
-dirblk:	defb	0FFh,0h		; al0, al1 (need 8 groups for directory)
-chksiz:	defw	0		; check vector size (none = fixed disk)
-offset:	defw	0		; reserved tracks
+sectpt:	defw	256		; SPT sectors per track, 256 tracks
+blkshf:	defb	5		; BSH block shift factor (block size 4096)
+blkmsk:	defb	31		; BLM block mask
+extmsk:	defb	1		; EXM extent mask
+maxall:	defw	2048-1		; DSM (disk size in 4K blocks)-1
+dirmax:	defw	maxdir-1	; DRM (1024 dir entries)
+dirblk:	defb	0FFh,0h		; AL0, AL1 (need 8 groups for directory)
+chksiz:	defw	0		; CKS check vector size (none = fixed disk)
+offset:	defw	0		; OFF reserved tracks
 
 cdrmaxa:
 	defw	cdrmax
@@ -3530,6 +3516,8 @@ cdrmaxa:
 ; Search directory sector buffer
 bufdir:	defs	128		; the faked directory sector
 extent:	defs	1		; the faked extent number
+
+alv:	defs	((2048-1) shr 3)+1	; DSM/8+1
 
 file_name:
 	defs	20		; holds converted RSX file name
