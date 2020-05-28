@@ -1231,8 +1231,6 @@ dbg_1:	ld	a,(hl)
 	or	l
 	jr	nz,rd_nxtd
 
-DE.NAME9 equ	DE.NAME+8	; offset for 9th character of filename
-
 	ld	a,(ix+DE.NAME+8) ; don't allow 9-character names
 	cp	' '		;  (it must be a space)
 	jp	nz,rd_nxtd
@@ -2358,7 +2356,7 @@ op_0:	bit	0,(hl)
     endif ;1
 
 	ld	a,E.NOBUF	; use "Out of disk buffers" error
-	jp	op_err
+	jr	op_err
 
 op_1:	ld	(opnltbe),hl	; save in case open fails
 	set	0,(hl)		; mark this LUN as unavailable
@@ -2437,12 +2435,19 @@ op_5:
     endif ;DEBUG
 
 	call	FOPEN		; open existing file
-op_6:	jp	c,op_err
+op_6:	jr	c,op_err
 
     if DBG_FIO and DEBUG
 	call	$PSTR
 	defb	'OPEN-I-File opened',CR,LF,0
     endif ;DEBUG
+
+	ld	d,0		; seek to the beginning
+	ld	e,d
+	ld	b,d
+	ld	c,d
+	call	FSEEK
+	jr	c,op_err
 
 	ld	hl,(opnlun)	; return the LUN of opened file
 	or	a		; clear carry

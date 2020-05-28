@@ -44,7 +44,7 @@ I've changed command input routine so that it may no longer accept
 program filenames from another user directory.  Instead I'll be
 considering adding a search-path instead - so if a CP/M program is
 not in the user's home directory then another directory will be
-searched (most likely SY:[CPM]).
+searched (most likely SY0:[CPM]).
 
 Also I've used the CP/M assembler ASM on DUMP.ASM and loaded the
 resultant LOAD.HEX file to produce a running DUMP.COM and tried
