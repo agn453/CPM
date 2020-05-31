@@ -101,7 +101,7 @@ RUBOUT	equ	7Fh
 ; CP/M memory sizing
 ; (consult the TKB map file before changing this)
 ;
-memsize	equ	57		; 58KB memory size
+memsize	equ	57		; 57KB memory size
 topmem	equ	memsize*1024
 cpmoffs	equ	topmem-20*1024	; based on standard CP/M 2.2
 
@@ -1574,15 +1574,15 @@ rn_err:
 	ret
 
 ;*******************************************************************
-; BDOS call read file seq.
+; BDOS call read file sequential
 ;
 ; On entry: IY -> pointer to FCB
 ;
 readfile:
-	call	read128
+	call	read128		; read sector
 ;    nread = read(blk->desc, dmaadr, 128);
 	cpw	hl,-1		; verify no error status
-	jp	z,r_eof
+	jr	z,r_eof
 
 	incw	(iy+fcbrec)	; bump record number
 	ld	h,b		; byte count to HL
@@ -1601,7 +1601,8 @@ readfile:
 	ld	a,CTRLZ		; add an end-of-file marker
 	ld	(hl),a
 r_ok:
-	jp	ret_hl_0	; no errors
+	call	update_ex	; update extent in the FCB
+	jr	ret_hl_0	; no errors
 
 r_eof:
   if DBG_FIO and DEBUG
@@ -1619,7 +1620,7 @@ ret_hl_1:
 	ret
 
 ;*******************************************************************
-; BDOS function write file seq.
+; BDOS function write file sequential
 ;
 ; On entry: IY -> pointer to FCB
 ;
@@ -1631,7 +1632,8 @@ writefile:
 	cpw	hl,128
 	jp	nz,no_good
 	incw	(iy+fcbrec)
-	jp	ret_hl_0
+	call	update_ex	; update extent in the FCB
+	jr	ret_hl_0
 
 ;*******************************************************************
 ; BDOS Random read/write. Max file length 8192 K
@@ -1671,7 +1673,24 @@ writerandom:
  	call	_rseek
 	cpw	hl,128
 	jp	nz,no_good
-	jp	ret_hl_0
+	jr	ret_hl_0
+
+;*******************************************************************
+; Update the rc and ex fields in the CP/M FCB
+;
+update_ex:
+	push	hl
+	ldw	hl,(iy+fcbrec)	; fetch the RSX280 record count
+	ld	a,l
+	dec	a
+	and	7Fh		; is low 7-bits zero?
+	jr	nz,ue_0		; no we haven't passed 128 sectors
+	inc	(iy+fcbex)	; yes, increment extent
+	ld	a,-1
+ue_0:	inc	a
+	ld	(iy+fcbrc),a	; update RC too
+	pop	hl
+	ret
 
 ;*******************************************************************
 ; BDOS Get address of allocation vector
