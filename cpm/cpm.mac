@@ -687,8 +687,9 @@ open_ok:
 	ld	hl,MAGIC
 	ld	(iy+fcbmagic),l ; make it magic (opened)
 	ld	hl,0		; return no error
-	ldw	(iy+fcbrec),hl	; zero internal record count
-	ld	(iy+fcbcr),l	;  and current record byte
+	ldw	(iy+fcbrec),hl	; zero internal record count,
+	ld	(iy+fcbcr),l	;  current record byte
+	ld	(iy+fcbex),l	;  and extent
 	ret
 no_good:
 	ld	hl,255		; return error
@@ -723,6 +724,7 @@ makefile:
 	ld	hl,0
 	ldw	(iy+fcbrec),hl
 	ld	(iy+fcbcr),l
+	ld	(iy+fcbex),l
   if DBG_FIO and DEBUG
 	push	hl
 	call	dumpfcb
@@ -996,7 +998,7 @@ sf_5:
 	jp	sf_err
 sf_8:
 
-  if 0
+  if 1
 ;**Dummy read - otherwise first random read of INDEXF.SYS is wrong record
 	ld	de,idxentry
 	ld	bc,IESZ
@@ -2328,7 +2330,6 @@ TTCLR:	push	hl
 ;
 ; Exit program and return to RSX280
 $EXIT:	call	close_all	; close all files
-	call	close_dir
 
 	call	$FLINP		; flush input buffer
 	ld	c,LUN_TI
@@ -2445,6 +2446,7 @@ op_creat:
 	ld	e,a
 
 	call	FCREAT		; create a new file
+	jr	c,op_err
 	jr	op_6
 
 op_5:
@@ -2454,7 +2456,16 @@ op_5:
     endif ;DEBUG
 
 	call	FOPEN		; open existing file
-op_6:	jr	c,op_err
+	jr	c,op_err
+
+    if 1
+	ld	de,bufdir	; dummy read
+	ld	bc,recsiz	;   otherwise first write
+	call	FREAD		;   fails to update file
+	; skip checking the return status
+    endif
+
+op_6:
 
     if DBG_FIO and DEBUG
 	call	$PSTR
@@ -2475,7 +2486,7 @@ op_6:	jr	c,op_err
 op_err:	ld	l,a		; save RSX280 error in errno
 	ld	h,0
 	ld	(errno),hl
-    if 1
+    if 0
 	call	$PSTR
 	defb	'OPEN-E-Error=',0
 	call	$HLHEX
@@ -2946,7 +2957,6 @@ done:
   endif ;DEBUG
 
 	call	close_all
-;	call	close_dir
 
 	xor	a
 	ld	(ttlc),a	; uppercase enable
@@ -2972,7 +2982,7 @@ cla_2:	inc	hl
 	ld	a,e
 	cp	luntbsz+1	; are we done ?
 	jr	c,cla_1		; no
-	ret
+;	ret
 
 close_dir:
 	ld	a,(diropn)	; close directory
@@ -3548,7 +3558,7 @@ cdrmaxa:
 	defw	cdrmax
 
 ; Search directory sector buffer
-bufdir:	defs	128		; the faked directory sector
+bufdir:	defs	recsiz		; the faked directory sector
 extent:	defs	1		; the faked extent number
 
 alv:	defs	((2048-1) shr 3)+1	; DSM/8+1
@@ -3633,9 +3643,6 @@ FDB_F4:	defs	FINFSZ
 FDBDEL:				; delete uses same as rename FDB
 FDBNEW:	defs	FINFSZ		; new name FDB
 FDBOLD:	defs	FINFSZ		; old name FDB
-  if 0
-FDBSER:	defs	FINFSZ		; search file-spec FDB
-  endif ;0
 FDB_D:	defs	FINFSZ		; directory FDB
 FDB_IX:	defs	FINFSZ		; INDEXF.SYS FDB
 
