@@ -1,4 +1,5 @@
-	title	CP/M 2.2 Emulator for RSX280
+	title	CP/M 2.2 Emulator for RSX280 05-Jun-2020
+	subttl	Definitions
 	ident	"V0.99"		; pre-release version
 
 ;*******************************************************************
@@ -206,6 +207,7 @@ flag_rw	equ	(1 SHL FM.RD) OR (1 SHL FM.WR)	; R/W mode for file open()
 
 ttibsz	equ	80		; terminal input buffer size
 	page
+	subttl	Transient Program Area
 ;*******************************************************************
 ;
 ; CP/M transient program .COM files are loaded here
@@ -224,7 +226,8 @@ tpa::
 ; One big region to load CP/M binaries into
 ;
 	defs	cpmbdos-cpmtpa-3 ; Rest of TPA
-
+	page
+	subttl	BDOS
 ;*******************************************************************
 ;
 ; BDOS emulator
@@ -520,9 +523,9 @@ backsp:	call	pctlh
 	call	space
 pctlh:
 	ld	c,BS
-;	jp	conout
+;	jr	conout
 
-; fall through
+	; fall through
 
 ;*******************************************************************
 ; Console output and keep track of the cursor position.
@@ -663,34 +666,47 @@ openfile:
   endif ;DEBUG
 
 	; test for reopen
-	ld	h,0
-	ld	l,(iy+fcbmagic)
-	cpw	hl,MAGIC
+	ld	a,(iy+fcbmagic)
+	cp	MAGIC
 	jr	nz,open2
 	ld	h,0
 	ld	l,(iy+fcblun)
 	push	hl
-	call	_close		; was open
-	pop	de
+	call	_close		; the file was open, so close it
+	pop	de		; discard LUN form stack
 open2:
 	call	getname		; convert to valid filename
 	push	hl		; string address
 	push	flag_rw
-	call	_open		; open file for R/W
+	call	_open		; open file for Read/Write
+	pop	de		; clean-up stack
+	pop	de
+	inc	hl		; HL is -1 on error
+	ld	a,h		; is it a valid LUN?
+	or	l
+	jr	nz,open_ok	; yes, we opened it
+
+	push	cpm_name	; no, now try to open it
+	push	flag_r		;  in the SY:[CPM] directory
+	call	_open		;  for read-only access
 	pop	de
 	pop	de
-	cpw	hl,-1
-	jr	z,no_good	; we don't do search paths for now
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l		; is it opened?
+	jr	z,no_good	; no
 
 open_ok:
-	ld	(iy+fcblun),l	; save the file number/LUB
-	ld	hl,MAGIC
-	ld	(iy+fcbmagic),l ; make it magic (opened)
+	dec	hl		; HL is LUN+1 from above
+	ld	(iy+fcblun),l	; save the file number/LUN
+	ld	a,MAGIC
+	ld	(iy+fcbmagic),a ; make it magic (opened)
 	ld	hl,0		; return no error
 	ldw	(iy+fcbrec),hl	; zero internal record count,
 	ld	(iy+fcbcr),l	;  current record byte
 	ld	(iy+fcbex),l	;  and extent
 	ret
+
 no_good:
 	ld	hl,255		; return error
 	ret
@@ -710,26 +726,31 @@ makefile:
 	call	getname		; convert to valid filename
 	push	hl		; str adr
 	call	_creat		; create the file
-;    desc = creat(getname(blk), 0666);
 	pop	de
-	cpw	hl,-1
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
 	jr	z,no_good
+	dec	hl
+	ld	(iy+fcblun),l	; save LUN
+	ld	a,MAGIC
+	ld	(iy+fcbmagic),a	; set magic byte
 
-;    blk->magic= MAGIC;
-;    blk->desc = desc;
-;    blk->rec  = 0;
-	ld	(iy+fcblun),l
-	ld	hl,MAGIC
-	ld	(iy+fcbmagic),l
-	ld	hl,0
-	ldw	(iy+fcbrec),hl
-	ld	(iy+fcbcr),l
-	ld	(iy+fcbex),l
-  if DBG_FIO and DEBUG
-	push	hl
-	call	dumpfcb
+	push	iy		; now point HL to EX byte
 	pop	hl
+	addw	hl,fcbex
+	ld	bc,256*(fcblun-fcbex) ; B = count, C = 0
+mf_0:	ld	(hl),c		; clear EX S1 S2 RC and
+	inc	hl		;  disk map bytes only up to
+	djnz	mf_0		;  where we put the LUN
+
+  if 1 ;DBG_FIO and DEBUG
+	call	dumpfcb
   endif ;DEBUG
+
+	; C reg is still 0
+	ld	h,c		; Success, (all files are created
+	ld	l,c		;  with a directory code = 0)
 	ret
 
 ;*******************************************************************
@@ -743,10 +764,14 @@ closefile:
 	push	hl
 	call	_close
 	pop	de
-	cpw	hl,-1
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
 	jr	z,no_good
-	ld	hl,0
-	ld	(iy+fcbmagic),l
+	xor	a
+	ld	(iy+fcbmagic),a
+	ld	h,a		; Success. (closed file is
+	ld	l,a		;  always with directory code = 0)
 	ret
 
 ;*******************************************************************
@@ -1475,7 +1500,9 @@ delete:
 	push	hl
 	call	_unlink
 	pop	de
-	cpw	hl,-1
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
 	jp	z,no_good
 	jp	ret_hl_0
 
@@ -1583,7 +1610,9 @@ rn_err:
 readfile:
 	call	read128		; read sector
 ;    nread = read(blk->desc, dmaadr, 128);
-	cpw	hl,-1		; verify no error status
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
 	jr	z,r_eof
 
 	incw	(iy+fcbrec)	; bump record number
@@ -1652,7 +1681,9 @@ readrandom:
 	call	read128
 ;    nread = read(blk->desc, dmaadr, 128);
     	call	_rseek
-	cpw	hl,-1
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
 	jp	z,no_good
 	ld	h,b		; bytes read to HL
 	ld	l,c
@@ -1780,7 +1811,8 @@ write128:
 	pop	de
 	pop	de
 	ret
-
+	page
+	subttl	Emulator Control
 ;*******************************************************************
 ; CP/M Emulator set-up
 ;
@@ -1862,9 +1894,20 @@ reentry:
 	call	_open
 	pop	de		; clean-up stack
 	pop	de
-
-	cpw	hl,-1
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
 	jr	nz,arg_5	; opened
+
+	push	COMCPM
+	push	flag_r		; try the SY:[CPM] area
+	call	_open
+	pop	de
+	pop	de
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
+	jr	nz,arg_5
 
 notfnd:
 	call	$CRLF
@@ -1874,7 +1917,7 @@ notfnd:
 	defb	'?',CR,LF,0	;  command
 	jp	reentry
 
-arg_5:				; HL contains the LUN of opened file
+arg_5:	dec	hl		; HL contains the LUN+1 of opened file
 	push	hl		; LUN to stack
 	push	tpa		; TPA address to stack
 ldcom1:	push	128		; number of bytes to read at a time
@@ -2869,10 +2912,8 @@ bdostable:
 ; end of BDOS dispatch table
 
 maxbdosfn equ	(($-bdostable)/2)-1 ; should be 40 (028h)
-
-;
-; First try of a direct bios call implementation
-;
+	page
+	subttl	BIOS
 	cseg
 
 tobios	equ	(cpmbios-cpmtpa)-($-tpa)
@@ -2945,6 +2986,8 @@ dummy:
 	ld	hl,biosmsg
 	call	$MSGHL
 
+	; fall through
+
 ; end of program run
 
 done:
@@ -2962,6 +3005,10 @@ done:
 	ld	(ttlc),a	; uppercase enable
 	ldw	(CCFLG),0	; re-enable Ctrl-C processing
 	jp	reentry		; go and get next emulator command
+	page
+	subttl	Support routines
+
+;** These can be relocated into BDOS area when debugging is disabled
 
 ;*******************************************************************
 ;
@@ -3073,6 +3120,7 @@ g_l3:
 g_l4:
 	xor	a
 	ld	(de),a		; terminate the string with a NUL
+	; We don't include the version number
 	ld	hl,file_name	; return pointer to name
 	ret
 
@@ -3476,7 +3524,8 @@ crlfp0:	ld	a,(column)	; move the cursor back to starting
 	ret	nc
 	call	space
 	jr	crlfp0
-
+	page
+	subttl	Variables
 ;*******************************************************************
 
 VERSION: defb	memsize/10+'0',memsize mod 10 +'0','K V0.99'
@@ -3492,6 +3541,7 @@ p_argv:	defs	10*2		; room for 10 pointers (0..9)
 vers1:	defb	';1'
 NULL:	defb	0
 
+COMCPM:	defb	'SY:[CPM]'	; for searching "system" area
 COMFCB:	defs	FNSZ		; RSX280 filespec of CP/M .COM file
 
 DOTCOM:	defb	'.COM',0
@@ -3544,15 +3594,15 @@ buffa:	defw	bufdir		; pointer to directory sector buffer
 	defw	alv		; allocation vector
 
 dpb:
-sectpt:	defw	256		; SPT sectors per track, 256 tracks
+sectpt:	defw	64		; SPT sectors per track, 1024 tracks
 blkshf:	defb	5		; BSH block shift factor (block size 4096)
 blkmsk:	defb	31		; BLM block mask
 extmsk:	defb	1		; EXM extent mask
-maxall:	defw	2048-1		; DSM (disk size in 4K blocks)-1
+maxall:	defw	2048-2-1	; DSM (disk size in 4K blocks-reserved)-1
 dirmax:	defw	maxdir-1	; DRM (1024 dir entries)
 dirblk:	defb	0FFh,0h		; AL0, AL1 (need 8 groups for directory)
 chksiz:	defw	0		; CKS check vector size (none = fixed disk)
-offset:	defw	0		; OFF reserved tracks
+offset:	defw	1		; OFF reserved tracks (1 track is 8Kb)
 
 cdrmaxa:
 	defw	cdrmax
@@ -3563,8 +3613,11 @@ extent:	defs	1		; the faked extent number
 
 alv:	defs	((2048-1) shr 3)+1	; DSM/8+1
 
+cpm_name:
+	defb	'SY:[CPM]'	; search path for file open
 file_name:
 	defs	20		; holds converted RSX file name
+				;  (filename.ext;1)
 
 ; RSX280 filename strings
 ; enough for filename.ext;1 (15 chars including NUL terminator)
