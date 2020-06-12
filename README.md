@@ -43,8 +43,8 @@ accessing programs can see and report on disk usage.
 
 * Files opened for updating from CP/M do not seem to be writing
 file sectors for existing files (e.g. running a configuration
-program to update a terminal-type do not change the first sector
-record in a .COM file where these things are stored).
+program to update a terminal-type does not change the first sector
+in a .COM file where these things are stored).
 
 
 Update: 26-May-2020
