@@ -25,6 +25,28 @@ Further documentation will be added at a later time.
 Revision history is now in reverse chronological order.
 
 
+Update: 12-Jun-2020
+-------------------
+
+Reorganise source-code and improve comments.  Only minor functional
+changes to the emulation of the CP/M file control block contents
+have been made.
+
+There are some outstanding issues -
+
+* Console input sometimes gets out-of-sync when the terminal input
+AST routine adds a character to the input ring buffer (we have no
+control over disabling/enabling RSX280 system interrupts).
+
+* Still to-do CP/M allocation vector emulation so that directory
+accessing programs can see and report on disk usage.
+
+* Files opened for updating from CP/M do not seem to be writing
+file sectors for existing files (e.g. running a configuration
+program to update a terminal-type do not change the first sector
+record in a .COM file where these things are stored).
+
+
 Update: 26-May-2020
 -------------------
 

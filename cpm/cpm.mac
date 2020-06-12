@@ -1,5 +1,5 @@
-	title	CP/M 2.2 Emulator for RSX280 05-Jun-2020
-	subttl	Definitions
+	title	CP/M 2.2 Emulator for RSX280
+	subttl	12-Jun-2020
 	ident	"V0.99"		; pre-release version
 
 ;*******************************************************************
@@ -159,6 +159,7 @@ fcbrec	equ	30		; RSX280 record counter read/write word
 
 empty	equ	0E5h		; deleted or empty directory entry
 recsiz	equ	128		; record size (CP/M sector size)
+exsiz	equ	128		; maximum extents per directory entry
 maxdir	equ	1024		; number of directory entries
 dirlen	equ	32		; directory entry length (CP/M)
 dirspr	equ	recsiz/dirlen	; directory entries per sector
@@ -283,74 +284,57 @@ bdos2:
 	jp	(hl)		; go there, function just returns above
 
 ;*******************************************************************
-; BDOS call return version number
-return_version:
-	ld	hl,022h		; pretend to be CP/M 2.2
-	ret
+; BDOS function dispatch table (keep this in cseg)
+;
+
+bdostable:
+	defw	done		; 0 - system reset
+	defw	read_console	; 1 - console read
+	defw	write_console	; 2 - console write
+	defw	no_good		; 3 - reader input
+	defw	no_good		; 4 - punch output
+	defw	no_good		; 5 - list output
+	defw	direct_console	; 6 - direct console I/O
+	defw	no_good		; 7 - get IO byte
+	defw	no_good		; 8 - set IO byte
+	defw	print_string	; 9 - print string
+	defw	rdbuf		; 10 - read console buffer
+	defw	console_status	; 11 - get console status
+	defw	return_version	; 12 - get version
+	defw	reset_dma	; 13 - reset disk system
+	defw	ret_hl_0	; 14 - select disk
+	defw	openfile 	; 15 - open file
+	defw	closefile 	; 16 - close file
+	defw	search_first	; 17 - search for first file
+	defw	search_next	; 18 - search for next file
+	defw	delete		; 19 - delete file
+	defw	readfile	; 20 - read next record
+	defw	writefile	; 21 - write next record
+	defw	makefile	; 22 - create file
+	defw	rename		; 23 - rename file
+	defw	ret_hl_1	; 24 - get login vector
+	defw	ret_hl_0	; 25 - get current disk
+	defw	set_dma		; 26 - set disk DMA address
+	defw	get_alv		; 27 - get allocation vector
+	defw	no_good		; 28 - write protect disk
+	defw	ret_hl_0	; 29 - get read-only vector
+	defw	no_good		; 30 - set file attributes
+	defw	get_alloca	; 31 - get addr(dpb params)
+	defw	ret_hl_0	; 32 - set/get user code
+	defw	readrandom	; 33 - read random
+	defw	writerandom	; 34 - write random
+	defw	no_good		; 35 - compute file size
+	defw	setrandom	; 36 - set random record
+	defw	reset_dma 	; 37 - reset drive
+	defw    no_good		; 38 - access drive (MP/M only)
+	defw	no_good		; 39 - free drive (MP/M only)
+	defw	no_good ;writerandom	; 40 - write random with zero fill
+; end of BDOS dispatch table
+
+maxbdosfn equ	(($-bdostable)/2)-1 ; should be 40 (028h)
 
 ;*******************************************************************
-; BDOS call set dma address
-set_dma:
-	ld	hl,(arg)
-	ld	(dmaadr),hl
-	ret
-
-;*******************************************************************
-; BDOS call reset dma address
-reset_dma:
-	ld	hl,cpmdma
-	ld	(dmaadr),hl
-	ret
-
-;*******************************************************************
-; BDOS call console input status
-console_status:
-	call	char_avail
-	ld	a,l
-	or	h
-	ret	z		; no char available
-	ld	hl,0ffh
-	ret
-
-;*******************************************************************
-; BDOS call write string
-print_string:
-	push	hl
-	ld	hl,(arg)
-pr_lop:	ld	a,(hl)
-	cp	'$'
-	jr	z,pr_done
-	call	writechar
-	inc	hl
-	jr	pr_lop
-pr_done:
-	call	$FLUSH		; empty console buffer
-	pop	hl
-	ret
-
-;*******************************************************************
-; BDOS call direct console IO
-direct_console:
-	ld	a,(arg)
-	cp	0ffh
-	jr	nz,write_console
-	call	char_avail
-	ld	a,h
-	or	l
-	ret	z		; no char available, return zero
-	call	readchar
-	ld	a,(char)
-	jr	rc_1
-
-;*******************************************************************
-; BDOS call write console
-write_console:
-	ld	a,(arg)
-	ld	(char),a
-	jp	writechar
-
-;*******************************************************************
-; BDOS call read console.
+; BDOS call (function 1) read console.
 read_console:
 	call	readchar
 	ld	a,(char)
@@ -366,7 +350,44 @@ rc_1:	ld	l,a		; return result in A and HL
 	ret
 
 ;*******************************************************************
-; BDOS call read console buffer
+; BDOS call (function 2) write console
+write_console:
+	ld	a,(arg)
+	ld	(char),a
+	jp	writechar
+
+;*******************************************************************
+; BDOS call (function 6) direct console IO
+direct_console:
+	ld	a,(arg)
+	cp	0ffh
+	jr	nz,write_console
+	call	char_avail
+	ld	a,h
+	or	l
+	ret	z		; no char available, return zero
+	call	readchar
+	ld	a,(char)
+	jr	rc_1
+
+;*******************************************************************
+; BDOS call (function 9) print string
+print_string:
+	push	hl
+	ld	hl,(arg)
+pr_lop:	ld	a,(hl)
+	cp	'$'
+	jr	z,pr_done
+	call	writechar
+	inc	hl
+	jr	pr_lop
+pr_done:
+	call	$FLUSH		; empty console buffer
+	pop	hl
+	ret
+
+;*******************************************************************
+; BDOS call (function 10) read console buffer
 ;
 ; We'll use code similar to the original DRI BDOS for
 ; reading the console buffer (for an authentic "feel")
@@ -506,7 +527,6 @@ readen:
 	pop	hl
 	ret
 
-;*******************************************************************
 ; New line on console
 crlf:
 	ld	c,CR
@@ -527,7 +547,6 @@ pctlh:
 
 	; fall through
 
-;*******************************************************************
 ; Console output and keep track of the cursor position.
 ; Also does primitive flow-control using Ctrl-S.
 ; Character to output is in C
@@ -567,93 +586,22 @@ notbacksp:
 	ret
 
 ;*******************************************************************
-; Copy parameter pointed to by IX into the CP/M FCB pointed to by HL
-;
-fillfcb:
-	ld	(hl),0		; always the current drive
-	inc	hl		; advance HL to fcbname
-	push	hl		; save and init with spaces
-	ld	b,8+3		;  to simplify the copy
-	ld	a,' '
-ff_blnk:
-	ld	(hl),a
-	inc	hl
-	djnz	ff_blnk
+; BDOS call (function 11) console input status
+console_status:
+	call	char_avail
+	ld	a,l
+	or	h
+	ret	z		; no char available
+	jr	ret255
 
-	pop	hl		; restore pointer to fcbname
-
-	ld	b,8		; name part is up to 8 chars
-ff_nam:	ld	a,(ix+0)
-	inc	ix
-	or	a		; end of string?
-	ret	z
-	cp	'.'		; filename delimiter
-	jr	z,ff_ext
-	call	delimiter	; is it a delimiter?
-	ret	z		; yes - done
-	cp	'*'		; wildcard?
-	jr	z,ff_nwild
-	ld	(hl),a		; store in FCB
-	inc	hl
-	djnz	ff_nam
-
-	; fall through here if name > 8 chars
-ff_skp:
-	ld	a,(ix+0)	; skip rest of name part
-	inc	ix
-	or	a
-	ret	z		; end of string - done
-	cp	'.'
-	jr	z,ff_exte
-	call	delimiter
-	ret	z		; delimiter - done
-	jr	ff_skp
-
-	; wildcard to rest of fcbname
-ff_nwild:
-	ld	(hl),'?'	; fill rest of filename
-	inc	hl		;  with '?'
-	djnz	ff_nwild
-
-	; advance in filename until '.' or end
-ff_nsk:	ld	a,(ix+0)	; skip until '.' or eos
-	inc	ix
-	or	a
-	ret	z
-	cp	'.'
-	jr	nz,ff_nsk
-
-ff_ext:	ld	a,b
-	or	a		; all 8 characters?
-	jr	z,ff_exte	; yes
-
-ff_adv	inc	hl		; no advance to fcbext
-	djnz	ff_adv
-
-ff_exte:
-	ld	b,3		; now we do fcbext
-ff_enxt:
-	ld	a,(ix+0)
-	inc	ix
-	or	a
-	ret	z		; end of string
-	call	delimiter
-	ret	z
-	cp	'*'		; wildcard ext?
-	jr	z,ff_ewild
-	ld	(hl),a
-	inc	hl
-	djnz	ff_enxt
-	ret
-
-ff_ewild:
-	ld	(hl),'?'	; wildcard for rest
-	inc	hl		;  of fcbext
-	djnz	ff_ewild
+;*******************************************************************
+; BDOS call (function 12) return version number
+return_version:
+	ld	hl,022h		; pretend to be CP/M 2.2
 	ret
 
 ;*******************************************************************
-; BDOS call open file.
+; BDOS call (function 15) open file.
 ;
 ; On entry: IY -> pointer to FCB
 ;
@@ -694,67 +642,29 @@ open2:
 	inc	hl		; HL is -1 on error
 	ld	a,h
 	or	l		; is it opened?
-	jr	z,no_good	; no
+	jr	z,ret255	; no
 
 open_ok:
 	dec	hl		; HL is LUN+1 from above
 	ld	(iy+fcblun),l	; save the file number/LUN
 	ld	a,MAGIC
 	ld	(iy+fcbmagic),a ; make it magic (opened)
+	ld	a,10000000b	; S2 high bit is a "file
+	ld	(iy+fcbs2),a	;  unmodified" flag
 	ld	hl,0		; return no error
 	ldw	(iy+fcbrec),hl	; zero internal record count,
-	ld	(iy+fcbcr),l	;  current record byte
+	ld	(iy+fcbcr),l	;  current record byte,
+	ld	(iy+fcbs1),l	;  S1
 	ld	(iy+fcbex),l	;  and extent
 	ret
 
 no_good:
+ret255:
 	ld	hl,255		; return error
 	ret
 
 ;*******************************************************************
-; CPM bdos call to make (create) a file
-;
-; On entry: IY -> pointer to FCB
-;
-makefile:
-  if DBG_FIO and DEBUG
-	call	$PSTR
-	defb	'BDOS-MAKEFILE',0
-	call	dumpfcb
-  endif ;DEBUG
-
-	call	getname		; convert to valid filename
-	push	hl		; str adr
-	call	_creat		; create the file
-	pop	de
-	inc	hl		; HL is -1 on error
-	ld	a,h
-	or	l
-	jr	z,no_good
-	dec	hl
-	ld	(iy+fcblun),l	; save LUN
-	ld	a,MAGIC
-	ld	(iy+fcbmagic),a	; set magic byte
-
-	push	iy		; now point HL to EX byte
-	pop	hl
-	addw	hl,fcbex
-	ld	bc,256*(fcblun-fcbex) ; B = count, C = 0
-mf_0:	ld	(hl),c		; clear EX S1 S2 RC and
-	inc	hl		;  disk map bytes only up to
-	djnz	mf_0		;  where we put the LUN
-
-  if 1 ;DBG_FIO and DEBUG
-	call	dumpfcb
-  endif ;DEBUG
-
-	; C reg is still 0
-	ld	h,c		; Success, (all files are created
-	ld	l,c		;  with a directory code = 0)
-	ret
-
-;*******************************************************************
-; BDOS call close file
+; BDOS call (function 16) close file
 ;
 ; On entry: IY -> pointer to FCB
 ;
@@ -767,7 +677,7 @@ closefile:
 	inc	hl		; HL is -1 on error
 	ld	a,h
 	or	l
-	jr	z,no_good
+	jr	z,ret255
 	xor	a
 	ld	(iy+fcbmagic),a
 	ld	h,a		; Success. (closed file is
@@ -775,12 +685,12 @@ closefile:
 	ret
 
 ;*******************************************************************
-; BDOS call search first
+; BDOS call (function 17) search first
 ;
 ; On entry: IY -> pointer to FCB
 ;
 search_first:
-  if 0;DBG_SRH and DEBUG
+  if DBG_SRH and DEBUG
 	call	$PSTR
 	defb	'S1st-I-FCB',0
 	call	dumpfcb
@@ -892,8 +802,8 @@ sf_7:
 	jr	z,sf_9		; module number (s2 byte)
 	ld	(iy+fcbmodnum),0
 
-sf_9:	; CP/M 2.2 BDOS calls RESELECT here to select the drive and user
-	ld	(iy+fcbdrive),0	; only a single drive, no user areas
+sf_9:
+	ld	(iy+fcbdrive),0	; only single drive, no user areas
 
 	ld	c,fcbnamlen	; length to match
 
@@ -935,10 +845,11 @@ sf_err:
 	pop	af
 	call	$AHEX
   endif ;DEBUG
-	jp	no_good
+	jp	ret255
+
 
 ;******************************************************************
-; BDOS search next
+; BDOS call (function 18) search next
 ;
 search_next:
   if 0;DBG_SRH and DEBUG
@@ -1253,8 +1164,8 @@ dbg_1:	ld	a,(hl)
   endif ;DEBUG
 
 	ld	hl,(ix+DE.VER)	; only use version 1 files
-	dec	hl
-	ld	a,h		; is version-1 zero?
+	dec	hl		; make it zero
+	ld	a,h		; is it zero?
 	or	l
 	jr	nz,rd_nxtd
 
@@ -1410,7 +1321,7 @@ rd_more:
 	ldir
 	; DE now points to the extent byte
 	ld	hl,(dirfsize)	; get file size in sectors to HL
-	cpw	hl,recsiz+1	; is it less than a full sector?
+	cpw	hl,exsiz+1	; is it less than a full extent?
 	jr	c,rd_single	; yes - only a single extent left
 
 	ex	de,hl		; pointer back to HL, size in DE
@@ -1419,9 +1330,9 @@ rd_more:
 	inc	hl
 	inc	hl
 	inc	hl
-	ld	(hl),128	; record count is 80h
+	ld	(hl),exsiz	; record count is 80h
 	ex	de,hl		; size back to HL, ptr to DE
-	subw	hl,128		; subtract 128 sectors
+	subw	hl,exsiz	; subtract 128 sectors
 	ld	(dirfsize),hl	; save for next extent
 	inc	(extent)	; increment extent
 	jr	rd_ndp
@@ -1465,8 +1376,8 @@ rd_next:
   endif ;DEBUG
 
 	ld	a,(dptr)	; point to next dir entry
-	add	dirlen
-	and	7Fh
+	add	dirlen		;  (add 32)
+	and	7Fh		; mask to 7-bit within a sector
 	ld	(dptr),a
 	jp	nz,rd_dir	; do next entry
 
@@ -1484,14 +1395,14 @@ compext:
 	and	b
 	ld	c,a		; low bits removed from C
 	pop	af
-	and	b		; low bits removed from a
+	and	b		; low bits removed from A
 	sub	c
 	and	maxext
 	pop	bc
 	ret
 
 ;*******************************************************************
-; BDOS call delete file
+; BDOS call (function 19) delete file
 ;
 ; On entry: IY -> pointer to FCB
 ;
@@ -1503,11 +1414,121 @@ delete:
 	inc	hl		; HL is -1 on error
 	ld	a,h
 	or	l
-	jp	z,no_good
+	jp	z,ret255
 	jp	ret_hl_0
 
 ;*******************************************************************
-; BDOS call rename file
+; BDOS call (function 20) read file sequential
+;
+; On entry: IY -> pointer to FCB
+;
+readfile:
+	call	read128		; read sector
+;    nread = read(blk->desc, dmaadr, 128);
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
+	jr	z,r_eof
+
+	incw	(iy+fcbrec)	; bump record number
+	ld	h,b		; byte count to HL
+	ld	l,c
+;    if (nread < 128)
+;	dmaadr[nread] = 0x1a;
+	ld	a,l		; all 128 bytes read?
+	or	a
+	jr	z,ret_hl_1	; none read - is EOF
+	cp	128
+	jr	nc,r_ok		; yes
+
+	ex	de,hl		; no, only partial record
+	ld	hl,(dmaadr)
+	add	hl,de
+	ld	a,CTRLZ		; add an end-of-file marker
+	ld	(hl),a
+r_ok:
+	call	update_ex	; update extent in the FCB
+	jp	ret_hl_0	; no errors
+
+r_eof:
+  if DBG_FIO and DEBUG
+	call	$PSTR
+	defb	'EOF-I-Reading LUN='
+	ld	h,0
+	ld	l,(iy+fcblun)
+	call	$HLHEX
+  endif ;DEBUG
+	ld	hl,(errno)
+	cpw	hl,E.EOF	; is it end-of-file?
+	jp	nz,ret255
+ret_hl_1:
+	ld	hl,1		; yes
+	ret
+
+;*******************************************************************
+; BDOS call (function 21) write file sequential
+;
+; On entry: IY -> pointer to FCB
+;
+writefile:
+	call	write128
+;    if (write(blk->desc, dmaadr, 128) != 128 )
+	ld	h,b
+	ld	l,c
+	cpw	hl,128
+	jp	nz,ret255
+	incw	(iy+fcbrec)
+	call	update_ex	; update extent in the FCB
+wr_success:
+	res	7,(iy+fcbs2)	; reset "unmodified file" bit in S2
+	jp	ret_hl_0
+
+;*******************************************************************
+; CPM bdos call (function 22) make (create) a file
+;
+; On entry: IY -> pointer to FCB
+;
+makefile:
+  if DBG_FIO and DEBUG
+	call	$PSTR
+	defb	'BDOS-MAKEFILE',0
+	call	dumpfcb
+  endif ;DEBUG
+
+	call	getname		; convert to valid filename
+	push	hl		; str adr
+	call	_creat		; create the file
+	pop	de
+	inc	hl		; HL is -1 on error
+	ld	a,h
+	or	l
+	jp	z,ret255
+	dec	hl
+	ld	(iy+fcblun),l	; save LUN
+	ld	a,MAGIC
+	ld	(iy+fcbmagic),a	; set magic byte
+
+	push	iy		; now point HL to EX byte
+	pop	hl
+	addw	hl,fcbex
+	ld	bc,256*(fcblun-fcbex) ; B = count, C = 0
+mf_0:	ld	(hl),c		; clear EX S1 S2 RC and
+	inc	hl		;  disk map bytes only up to
+	djnz	mf_0		;  where we put the LUN
+
+  if 0 ;DBG_FIO and DEBUG
+	call	dumpfcb
+  endif ;DEBUG
+
+	; C reg is still 0
+	ld	(iy+fcbs1),c	; reset S1 and clear the
+	ld	(iy+fcbs2),c	;  "unmodified file" bit in S2
+	ld	h,c		; Success, (all files are created
+	ld	l,c		;  with a directory code = 0)
+	ret
+
+;*******************************************************************
+; BDOS call (function 23) rename file
 ;
 ; On entry: IY -> pointer to FCB
 ;
@@ -1603,79 +1624,28 @@ rn_err:
 	ret
 
 ;*******************************************************************
-; BDOS call read file sequential
-;
-; On entry: IY -> pointer to FCB
-;
-readfile:
-	call	read128		; read sector
-;    nread = read(blk->desc, dmaadr, 128);
-	inc	hl		; HL is -1 on error
-	ld	a,h
-	or	l
-	jr	z,r_eof
-
-	incw	(iy+fcbrec)	; bump record number
-	ld	h,b		; byte count to HL
-	ld	l,c
-;    if (nread < 128)
-;	dmaadr[nread] = 0x1a;
-	ld	a,l		; all 128 bytes read?
-	or	a
-	jr	z,ret_hl_1	; none read - is EOF
-	cp	128
-	jr	nc,r_ok		; yes
-
-	ex	de,hl		; no, only partial record
-	ld	hl,(dmaadr)
-	add	hl,de
-	ld	a,CTRLZ		; add an end-of-file marker
-	ld	(hl),a
-r_ok:
-	call	update_ex	; update extent in the FCB
-	jr	ret_hl_0	; no errors
-
-r_eof:
-  if DBG_FIO and DEBUG
-	call	$PSTR
-	defb	'EOF-I-Reading LUN='
-	ld	h,0
-	ld	l,(iy+fcblun)
-	call	$HLHEX
-  endif ;DEBUG
-	ld	hl,(errno)
-	cpw	hl,E.EOF	; is it end-of-file?
-	jp	nz,no_good
-ret_hl_1:
-	ld	hl,1		; yes
+; BDOS call (function 26) set DMA address
+set_dma:
+	ld	hl,(arg)
+	ld	(dmaadr),hl
 	ret
 
 ;*******************************************************************
-; BDOS function write file sequential
-;
-; On entry: IY -> pointer to FCB
-;
-writefile:
-	call	write128
-;    if (write(blk->desc, dmaadr, 128) != 128 )
-	ld	h,b
-	ld	l,c
-	cpw	hl,128
-	jp	nz,no_good
-	incw	(iy+fcbrec)
-	call	update_ex	; update extent in the FCB
-	jr	ret_hl_0
-
-;*******************************************************************
-; BDOS Random read/write. Max file length 8192 K
-;
-; On entry: IY -> pointer to FCB
-;
-setrandom:
-	ldw	hl,(iy+fcbrec)
-	ldw	(iy+fcbran),hl
+; BDOS call (function 27) get allocation vector
+get_alv:
+	ld	hl,alv
 	ret
 
+;*******************************************************************
+; BDOS call (function 31) get address of disk parameter block
+;
+get_alloca:
+	ld	hl,dpb
+	ret
+
+;*******************************************************************
+; BDOS call (function 33) read random.
+;
 readrandom:
 	call	_rseek
 	call	read128
@@ -1684,7 +1654,7 @@ readrandom:
 	inc	hl		; HL is -1 on error
 	ld	a,h
 	or	l
-	jp	z,no_good
+	jp	z,ret255
 	ld	h,b		; bytes read to HL
 	ld	l,c
 	ld	a,l
@@ -1696,6 +1666,7 @@ ret_hl_0:
 	ret
 
 ;*******************************************************************
+; BDOS call (function 34) write random.
 ;
 writerandom:
 	call	_rseek
@@ -1705,10 +1676,10 @@ writerandom:
 	ld	l,c		; bytes written to HL
  	call	_rseek
 	cpw	hl,128
-	jp	nz,no_good
-	jr	ret_hl_0
+	jp	nz,ret255
+;**do we need to update the FCB record position?
+	jp	wr_success
 
-;*******************************************************************
 ; Update the rc and ex fields in the CP/M FCB
 ;
 update_ex:
@@ -1719,21 +1690,114 @@ update_ex:
 	and	7Fh		; is low 7-bits zero?
 	jr	nz,ue_0		; no we haven't passed 128 sectors
 	inc	(iy+fcbex)	; yes, increment extent
-	ld	a,-1
+	ld	a,-1		;  and RC becomes 0
 ue_0:	inc	a
 	ld	(iy+fcbrc),a	; update RC too
 	pop	hl
 	ret
 
 ;*******************************************************************
-; BDOS Get address of allocation vector
+; BDOS call (function 36) set random record. Max file length 8192 K
 ;
-get_alloca:
-	ld	hl,dpb
+; On entry: IY -> pointer to FCB
+;
+setrandom:
+	ldw	hl,(iy+fcbrec)
+	ldw	(iy+fcbran),hl
 	ret
 
-get_alv:
-	ld	hl,alv
+;*******************************************************************
+; BDOS call (function 37) reset drive (and DMA address)
+reset_dma:
+	ld	hl,cpmdma
+	ld	(dmaadr),hl
+	jp	ret_hl_0
+	page
+	subttl	Internal emulator routines
+;*******************************************************************
+; Copy parameter pointed to by IX into the CP/M FCB pointed to by HL
+;
+fillfcb:
+	ld	(hl),0		; always the current drive
+	inc	hl		; advance HL to fcbname
+	push	hl		; save and init with spaces
+	ld	b,8+3		;  to simplify the copy
+	ld	a,' '
+ff_blnk:
+	ld	(hl),a
+	inc	hl
+	djnz	ff_blnk
+
+	pop	hl		; restore pointer to fcbname
+
+	ld	b,8		; name part is up to 8 chars
+ff_nam:	ld	a,(ix+0)
+	inc	ix
+	or	a		; end of string?
+	ret	z
+	cp	'.'		; filename delimiter
+	jr	z,ff_ext
+	call	delimiter	; is it a delimiter?
+	ret	z		; yes - done
+	cp	'*'		; wildcard?
+	jr	z,ff_nwild
+	ld	(hl),a		; store in FCB
+	inc	hl
+	djnz	ff_nam
+
+	; fall through here if name > 8 chars
+ff_skp:
+	ld	a,(ix+0)	; skip rest of name part
+	inc	ix
+	or	a
+	ret	z		; end of string - done
+	cp	'.'
+	jr	z,ff_exte
+	call	delimiter
+	ret	z		; delimiter - done
+	jr	ff_skp
+
+	; wildcard to rest of fcbname
+ff_nwild:
+	ld	(hl),'?'	; fill rest of filename
+	inc	hl		;  with '?'
+	djnz	ff_nwild
+
+	; advance in filename until '.' or end
+ff_nsk:	ld	a,(ix+0)	; skip until '.' or eos
+	inc	ix
+	or	a
+	ret	z
+	cp	'.'
+	jr	nz,ff_nsk
+
+ff_ext:	ld	a,b
+	or	a		; all 8 characters?
+	jr	z,ff_exte	; yes
+
+ff_adv	inc	hl		; no advance to fcbext
+	djnz	ff_adv
+
+ff_exte:
+	ld	b,3		; now we do fcbext
+ff_enxt:
+	ld	a,(ix+0)
+	inc	ix
+	or	a
+	ret	z		; end of string
+	call	delimiter
+	ret	z
+	cp	'*'		; wildcard ext?
+	jr	z,ff_ewild
+	ld	(hl),a
+	inc	hl
+	djnz	ff_enxt
+	ret
+
+ff_ewild:
+	ld	(hl),'?'	; wildcard for rest
+	inc	hl		;  of fcbext
+	djnz	ff_ewild
 	ret
 
 ;*******************************************************************
@@ -2370,6 +2434,35 @@ TTCLR:	push	hl
 	ret
 
 ;*******************************************************************
+;; These routines are for the emulator.  They do not
+; update the cursor position like their CP/M counterparts
+;
+;Newline
+$CRLF:	call	$PRINT
+	defb	CR,LF,0
+	ret
+
+$PSTR:
+	call	$CRLF
+	ld	a,'%'
+	call	$TTOUT
+
+;Print in-line message terminated by a NUL
+$PRINT:
+	ex	(sp),hl
+	call	$MSGHL
+	ex	(sp),hl
+	ret
+
+;Print message pointed to by HL terminated by a NUL
+$MSGHL:	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	call	$TTOUT
+	jr	$MSGHL
+
+;*******************************************************************
 ;
 ; Exit program and return to RSX280
 $EXIT:	call	close_all	; close all files
@@ -2862,56 +2955,6 @@ rs_2:	pop	bc
 	pop	hl		; restore HL
 	ret
 
-;*******************************************************************
-;
-; BDOS function dispatch table (keep this in cseg)
-	cseg
-
-bdostable:
-	defw	done		; 0 - system reset
-	defw	read_console	; 1 - console read
-	defw	write_console	; 2 - console write
-	defw	no_good		; 3 - reader input
-	defw	no_good		; 4 - punch output
-	defw	no_good		; 5 - list output
-	defw	direct_console	; 6 - direct console I/O
-	defw	no_good		; 7 - get IO byte
-	defw	no_good		; 8 - set IO byte
-	defw	print_string	; 9 - print string
-	defw	rdbuf		; 10 - read console buffer
-	defw	console_status	; 11 - get console status
-	defw	return_version	; 12 - get version
-	defw	reset_dma	; 13 - reset disk system
-	defw	ret_hl_0	; 14 - select disk
-	defw	openfile 	; 15 - open file
-	defw	closefile 	; 16 - close file
-	defw	search_first	; 17 - search for first file
-	defw	search_next	; 18 - search for next file
-	defw	delete		; 19 - delete file
-	defw	readfile	; 20 - read next record
-	defw	writefile	; 21 - write next record
-	defw	makefile	; 22 - create file
-	defw	rename		; 23 - rename file
-	defw	ret_hl_1	; 24 - get login vector
-	defw	ret_hl_0	; 25 - get current disk
-	defw	set_dma		; 26 - set disk DMA address
-	defw	get_alv		; 27 - get allocation vector
-	defw	no_good		; 28 - write protect disk
-	defw	ret_hl_0	; 29 - get read-only vector
-	defw	no_good		; 30 - set file attributes
-	defw	get_alloca	; 31 - get addr(dpb params)
-	defw	ret_hl_0	; 32 - set/get user code
-	defw	readrandom	; 33 - read random
-	defw	writerandom	; 34 - write random
-	defw	no_good		; 35 - compute file size
-	defw	setrandom	; 36 - set random record
-	defw	reset_dma 	; 37 - reset drive
-	defw    no_good		; 38 - access drive (MP/M only)
-	defw	no_good		; 39 - free drive (MP/M only)
-	defw	no_good ;writerandom	; 40 - write random with zero fill
-; end of BDOS dispatch table
-
-maxbdosfn equ	(($-bdostable)/2)-1 ; should be 40 (028h)
 	page
 	subttl	BIOS
 	cseg
@@ -3198,7 +3241,6 @@ sl_12:	ld	a,c
 	pop	hl
 	ret
 
-
 ;*******************************************************************
 ;
 ; CP/M BDOS emulator variables
@@ -3217,36 +3259,6 @@ errno:	defs	2		; error code
 lret:
 aret:	defs	2		; address value return result
 dirloc:	defs	1		; directory entry located
-
-;*******************************************************************
-;
-; These routines are for the emulator.  They do not
-; update the cursor position like their CP/M counterparts
-;
-;Newline
-$CRLF:	call	$PRINT
-	defb	CR,LF,0
-	ret
-
-$PSTR:
-	call	$CRLF
-	ld	a,'%'
-	call	$TTOUT
-
-;Print in-line message terminated by a NUL
-$PRINT:
-	ex	(sp),hl
-	call	$MSGHL
-	ex	(sp),hl
-	ret
-
-;Print message pointed to by HL terminated by a NUL
-$MSGHL:	ld	a,(hl)
-	inc	hl
-	or	a
-	ret	z
-	call	$TTOUT
-	jr	$MSGHL
 
 ;*******************************************************************
 ;
@@ -3594,15 +3606,15 @@ buffa:	defw	bufdir		; pointer to directory sector buffer
 	defw	alv		; allocation vector
 
 dpb:
-sectpt:	defw	64		; SPT sectors per track, 1024 tracks
+sectpt:	defw	128		; SPT sectors per track, 512 tracks
 blkshf:	defb	5		; BSH block shift factor (block size 4096)
 blkmsk:	defb	31		; BLM block mask
 extmsk:	defb	1		; EXM extent mask
-maxall:	defw	2048-2-1	; DSM (disk size in 4K blocks-reserved)-1
+maxall:	defw	2048-1		; DSM (disk size in 4K blocks-reserved)-1
 dirmax:	defw	maxdir-1	; DRM (1024 dir entries)
 dirblk:	defb	0FFh,0h		; AL0, AL1 (need 8 groups for directory)
 chksiz:	defw	0		; CKS check vector size (none = fixed disk)
-offset:	defw	1		; OFF reserved tracks (1 track is 8Kb)
+offset:	defw	0		; OFF reserved tracks (1 track is 16Kb)
 
 cdrmaxa:
 	defw	cdrmax
