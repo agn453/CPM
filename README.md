@@ -30,7 +30,8 @@ Update: 12-Jun-2020
 
 Reorganise source-code and improve comments.  Only minor functional
 changes to the emulation of the CP/M file control block contents
-have been made.
+have been made, and an attempt at building the disk allocation
+vector upon starting the emulator.
 
 There are some outstanding issues -
 
@@ -38,8 +39,9 @@ There are some outstanding issues -
 AST routine adds a character to the input ring buffer (we have no
 control over disabling/enabling RSX280 system interrupts).
 
-* Still to-do CP/M allocation vector emulation so that directory
-accessing programs can see and report on disk usage.
+* Still to-do - fine-tune the CP/M allocation vector emulation so
+that directory accessing programs can see and report on disk usage
+in blocks correctly.
 
 * Files opened for updating from CP/M do not seem to be writing
 file sectors for existing files (e.g. running a configuration

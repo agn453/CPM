@@ -325,7 +325,7 @@ bdostable:
 	defw	writerandom	; 34 - write random
 	defw	no_good		; 35 - compute file size
 	defw	setrandom	; 36 - set random record
-	defw	reset_dma 	; 37 - reset drive
+	defw	reset_drive 	; 37 - reset drive
 	defw    no_good		; 38 - access drive (MP/M only)
 	defw	no_good		; 39 - free drive (MP/M only)
 	defw	no_good ;writerandom	; 40 - write random with zero fill
@@ -601,6 +601,13 @@ return_version:
 	ret
 
 ;*******************************************************************
+; BDOS call (function 13) reset disk system (and DMA address)
+reset_dma:
+	ld	hl,cpmdma
+	ld	(dmaadr),hl
+	jp	ret_hl_0
+
+;*******************************************************************
 ; BDOS call (function 15) open file.
 ;
 ; On entry: IY -> pointer to FCB
@@ -647,15 +654,12 @@ open2:
 open_ok:
 	dec	hl		; HL is LUN+1 from above
 	ld	(iy+fcblun),l	; save the file number/LUN
-	ld	a,MAGIC
-	ld	(iy+fcbmagic),a ; make it magic (opened)
-	ld	a,10000000b	; S2 high bit is a "file
-	ld	(iy+fcbs2),a	;  unmodified" flag
+	ld	(iy+fcbmagic),MAGIC ; make it magic (opened)
+	ld	(iy+fcbs2),10000000b ;  unmodified" flag
 	ld	hl,0		; return no error
 	ldw	(iy+fcbrec),hl	; zero internal record count,
 	ld	(iy+fcbcr),l	;  current record byte,
-	ld	(iy+fcbs1),l	;  S1
-	ld	(iy+fcbex),l	;  and extent
+	ldw	(iy+fcbex),hl	;  S1 and extent
 	ret
 
 no_good:
@@ -704,15 +708,17 @@ search_first:
 
 	ld	ix,fsrdir	; yes, re-open it to get
 	call	FCLOSE		;  any recent updates
-	jr	nc,sf_1
 
   if DBG_FIO and DEBUG
+	jr	nc,sf_1
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Close dir',0
 	pop	af
-  endif ;DEBUG
 	jp	sf_err
+  else
+	jp	c,sf_err
+  endif ;DEBUG
 
 sf_1:	ld	hl,cdname
 	ld	c,GD.TSK	; fetch the current directory
@@ -738,15 +744,17 @@ sf_2:	ld	hl,cdname
 	ld	ix,fsrdir
 	ld	(ix+FC.MODE),flag_r	; Read mode
 	call	FOPEN		; open directory
-	jr	nc,sf_4
 
   if DBG_FIO and DEBUG
+	jr	nc,sf_4
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Open dir',0
 	pop	af
+	jp	sf_err
+  else
+	jr	c,sf_err
   endif ;DEBUG
-	jp	c,sf_err
 
 sf_4:
 	ld	a,00000001b	; mark directory file as open
@@ -758,15 +766,17 @@ sf_4:
 
 	ld	ix,fsridx	; Yes, re-open it to
 	call	FCLOSE		;  refresh any updated files
-	jr	nc,sf_6
 
   if DBG_FIO and DEBUG
+	jr	nc,sf_6
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Close idx',0
 	pop	af
-  endif ;DEBUG
 	jp	sf_err
+  else
+	jr	c,sf_err
+  endif ;DEBUG
 
 sf_6:	ld	hl,idxfn	; parse INDEXF.SYS filename
 	ld	ix,FDB_IX	;  into the FDB
@@ -776,15 +786,17 @@ sf_6:	ld	hl,idxfn	; parse INDEXF.SYS filename
 	ld	ix,fsridx
 	ld	(ix+FC.MODE),flag_r	; Read mode
 	call	FOPEN		; open INDEXF.SYS
-	jr	nc,sf_7
 
   if DBG_FIO and DEBUG
+	jr	nc,sf_7
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Open idx',0
 	pop	af
-  endif ;DEBUG
 	jp	sf_err
+  else
+	jr	c,sf_err
+  endif ;DEBUG
 
 sf_7:
 	ld	a,00000001b
@@ -831,7 +843,8 @@ move0:	dec	c
 	inc	de
 	inc	hl
 	jr	move0
-move9:	ld	hl,(aret)
+move9:	ld	hl,(aret)	; H is physical error
+	ld	a,l		; L and A are directory entry code 0..3
 	ret
 
 sf_err:
@@ -906,15 +919,17 @@ search:	ld	a,0FFh
 
 	ld	ix,fsrdir	; seek to DEBC record
 	call	FSEEK
-	jr	nc,sf_5
 
   if DBG_FIO and DEBUG
+	jr	nc,sf_5
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Seek dir',0
 	pop	af
-  endif ;DEBUG
 	jp	sf_err
+  else
+	jr	c,sf_err
+  endif ;DEBUG
 
 sf_5:
 	ld	d,0		; seek to start of
@@ -923,15 +938,17 @@ sf_5:
 	ld	c,d
 	ld	ix,fsridx
 	call	FSEEK
-	jr	nc,sf_8
 
   if DBG_FIO and DEBUG
+	jr	nc,sf_8
 	push	af
 	call	$PSTR
 	defb	'S1st-E-Seek idx',0
 	pop	af
-  endif ;DEBUG
 	jp	sf_err
+  else
+	jr	c,sf_err
+  endif ;DEBUG
 sf_8:
 
   if 1
@@ -1505,8 +1522,7 @@ makefile:
 	jp	z,ret255
 	dec	hl
 	ld	(iy+fcblun),l	; save LUN
-	ld	a,MAGIC
-	ld	(iy+fcbmagic),a	; set magic byte
+	ld	(iy+fcbmagic),MAGIC	; set magic byte
 
 	push	iy		; now point HL to EX byte
 	pop	hl
@@ -1707,11 +1723,18 @@ setrandom:
 	ret
 
 ;*******************************************************************
-; BDOS call (function 37) reset drive (and DMA address)
-reset_dma:
-	ld	hl,cpmdma
-	ld	(dmaadr),hl
-	jp	ret_hl_0
+; BDOS call (function 37) reset drive
+;
+reset_drive:
+	ld	hl,(arg)	; argument is a drive vector
+	dec	hl		; (only 1 drive A: - bit 0)
+	ld	a,h
+	or	l
+	jp	nz,ret_hl_0	; not drive A: - just return zero
+	; A and HL is zero
+	ld	(logged),a	; Flag Drive A: idle (not logged in)
+	ret
+
 	page
 	subttl	Internal emulator routines
 ;*******************************************************************
@@ -1910,6 +1933,8 @@ init_0:	ld	(hl),a		;  are closed)
 	defb	CR,LF,'CP/M 2.2 emulator ',0
 	ld	hl,VERSION
 	call	$MSGHL
+	call	login		; Log-in the emulated drive
+				;  (and build an allocation vector)
 reentry:
 	call	$FLINP		; flush input buffer
 	call	$PRINT	; output prompt
@@ -2463,8 +2488,90 @@ $MSGHL:	ld	a,(hl)
 	jr	$MSGHL
 
 ;*******************************************************************
+; Login the default directory and build an allocation vector
 ;
+login:
+	ldw	(blocks),0	; zero block count
+	ld	hl,alv
+	xor	a		; clear allocation vector
+	ld	b,a		; (allocation vector is 256 bytes)
+lo_0:	ld	(hl),a
+	inc	hl
+	djnz	lo_0
+
+	ld	hl,bufdir	; use directory sector buffer
+	ld	(dmaadr),hl	; set dma address
+	ld	iy,logfcb	; prepare to discover all
+	ld	(arg),iy	;  files in the current
+	call	search_first	;  directory
+	jr	lo_1
+
+log_next:
+	call	search_next
+
+lo_1:	ld	a,l		; directory entry pointer
+	cp	0FFh		; done
+	jr	z,log_it
+
+	mult	a,dirlen	; point HL to this directory
+	addw	hl,bufdir	;  entry
+	push	hl
+	pop	ix		; IX now points to entry
+	ld	a,(hl)		; Is it deleted file?
+	cp	empty
+	jr	z,log_next	; yes, next one please
+
+	ld	a,(ix+fcbrc)	; get the record count
+	ld	h,0
+	ld	l,a
+	ld	a,(blkmsk)
+	inc	a		; sectors per block
+	divu	hl,a		; divide to get number of blocks
+	push	af
+	ld	a,l		; check for remainder
+	or	a
+	jr	z,lo_2		; none
+	pop	af		; increment block count
+	inc	a
+	jr	lo_3
+lo_2:	pop	af
+lo_3:	ld	d,0
+	ld	e,a		; A has block count - > DE
+	ld	hl,(blocks)	; update total block count
+	add	hl,de
+	ld	(blocks),hl
+	jr	log_next	; next file
+
+log_it:	ld	a,1
+	ld	(logged),a
+	ld	de,0
+	ld	hl,(blocks)	; now build allocation vector
+	divuw	dehl,8		; calculate number of bytes in vector
+				;  to set, remainder in E (0..7)
+	ld	b,h
+	ld	c,l
+	ld	hl,alv
+lo_4:	ld	a,b
+	or	c
+	jr	z,lo_5
+	ld	(hl),0FFh
+	inc	hl
+	dec	bc
+	jr	lo_4
+lo_5:	ld	a,e
+	or	a
+	ret	z		; no remaining blocks
+	xor	a
+lo_6:	scf			; calculate 2**E
+	rra
+	dec	e
+	jr	nz,lo_6
+	ld	(hl),a		; store into vector
+	ret
+
+;*******************************************************************
 ; Exit program and return to RSX280
+;
 $EXIT:	call	close_all	; close all files
 
 	call	$FLINP		; flush input buffer
@@ -3623,7 +3730,14 @@ cdrmaxa:
 bufdir:	defs	recsiz		; the faked directory sector
 extent:	defs	1		; the faked extent number
 
-alv:	defs	((2048-1) shr 3)+1	; DSM/8+1
+logged:	defs	1		; the drive is logged-in (if non zero)
+blocks:: defs	2		; blocks used
+logfcb:	defb	'?'		; search fcb to get all files
+	defb	'????????'	; filename
+	defb	'???',0,0,0,0	; ext, ex, s1, s2 and rc
+	defs	16		;  on the emulated drive
+
+alv::	defs	((2048-1) shr 3)+1	; DSM/8+1
 
 cpm_name:
 	defb	'SY:[CPM]'	; search path for file open
