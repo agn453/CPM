@@ -1,5 +1,5 @@
 	title	CP/M 2.2 Emulator for RSX280
-	subttl	12-Jun-2020
+	subttl	14-Jun-2020
 	ident	"V0.99"		; pre-release version
 
 ;*******************************************************************
@@ -56,6 +56,9 @@ DBG_SRH	equ	0004h		; search first/next debug
 DBG_ERR equ	8000h		; error debug
 
 DEBUG	equ	DBG_ERR ;or DBG_SRH
+
+DUMMYRD	equ	false	;enables dummy read after file open
+DUMMYSK	equ	false	;enables dummy seek after file open
 
 ;
 ; Include files and externals
@@ -120,22 +123,6 @@ cpmbdos	equ	03c00h+cpmoffs	; BDOS contains emulation code
 cpmbios	equ	04a00h+cpmoffs	; BIOS only emulates character I/O
 
 ; CP/M File Control Block offsets
-;struct	fcb {
-;/*0*/	char	drive;		/* drive code */
-;/*1*/	char	name[8];	/* file name */
-;/*9*/	char	ext[3];		/* file type */
-;/*12*/	char	ex;		/* file extent */
-;/*13*/ char	s1;		/* system use s1 */
-;/*14*/	char	s2;		/* system use s2 */
-;/*15*/	char	rc;		/* number of records in present extent */
-;/*16*/	char	dm[16];		/* Reserved for system use (disk map) */
-;/*28*/	byte	lun;		/* RSX280 LUN for file when open */
-;/*29*/	byte	magic;		/* RSX280 MAGIC byte to indicate file opened */
-;/*30*/ int	rec;		/* RSX280 internal 16-bit record count */
-;/*32*/	char	cr;		/* current record to read or write */
-;/*33*/	unsigned ranrec;	/* random record number (24 bit no. ) */
-;/*35*/	char	hr_rec;		/*   "       "   high byte */
-;}
 fcbdrive equ	0		; drive code
 fcbname	equ	1		; file name
 fcbext	equ	9		; file type (extension)
@@ -285,7 +272,6 @@ bdos2:
 
 ;*******************************************************************
 ; BDOS function dispatch table (keep this in cseg)
-;
 
 bdostable:
 	defw	done		; 0 - system reset
@@ -302,7 +288,7 @@ bdostable:
 	defw	console_status	; 11 - get console status
 	defw	return_version	; 12 - get version
 	defw	reset_dma	; 13 - reset disk system
-	defw	ret_hl_0	; 14 - select disk
+	defw	select_disk	; 14 - select disk
 	defw	openfile 	; 15 - open file
 	defw	closefile 	; 16 - close file
 	defw	search_first	; 17 - search for first file
@@ -323,7 +309,7 @@ bdostable:
 	defw	ret_hl_0	; 32 - set/get user code
 	defw	readrandom	; 33 - read random
 	defw	writerandom	; 34 - write random
-	defw	no_good		; 35 - compute file size
+	defw	comp_filesize	; 35 - compute file size
 	defw	setrandom	; 36 - set random record
 	defw	reset_drive 	; 37 - reset drive
 	defw    no_good		; 38 - access drive (MP/M only)
@@ -334,10 +320,10 @@ bdostable:
 maxbdosfn equ	(($-bdostable)/2)-1 ; should be 40 (028h)
 
 ;*******************************************************************
-; BDOS call (function 1) read console.
+; BDOS call (function 1) read console
+
 read_console:
 	call	readchar
-	ld	a,(char)
 	call	echoc		; Echo character
 	jr	c,rc_1		; Non-printing?
 	push	af
@@ -351,15 +337,21 @@ rc_1:	ld	l,a		; return result in A and HL
 
 ;*******************************************************************
 ; BDOS call (function 2) write console
+;
+; On entry: IYL contains the character
+
 write_console:
-	ld	a,(arg)
-	ld	(char),a
+	ld	a,iyl		; was (arg)
 	jp	writechar
 
 ;*******************************************************************
-; BDOS call (function 6) direct console IO
+; BDOS call (function 6) direct console I/O
+;
+; On entry: IYL contains the input/output flag (value 0FFh)
+; or the character
+
 direct_console:
-	ld	a,(arg)
+	ld	a,iyl		; was (arg)
 	cp	0ffh
 	jr	nz,write_console
 	call	char_avail
@@ -367,24 +359,20 @@ direct_console:
 	or	l
 	ret	z		; no char available, return zero
 	call	readchar
-	ld	a,(char)
 	jr	rc_1
 
 ;*******************************************************************
 ; BDOS call (function 9) print string
+;
+; On entry: IY points to the string terminated by a '$'
+
 print_string:
-	push	hl
-	ld	hl,(arg)
-pr_lop:	ld	a,(hl)
+	ld	a,(iy+0)
 	cp	'$'
-	jr	z,pr_done
+	jp	z,$FLUSH	; done - flush buffer and return
 	call	writechar
-	inc	hl
-	jr	pr_lop
-pr_done:
-	call	$FLUSH		; empty console buffer
-	pop	hl
-	ret
+	inc	iy
+	jr	print_string
 
 ;*******************************************************************
 ; BDOS call (function 10) read console buffer
@@ -587,6 +575,7 @@ notbacksp:
 
 ;*******************************************************************
 ; BDOS call (function 11) console input status
+
 console_status:
 	call	char_avail
 	ld	a,l
@@ -596,22 +585,37 @@ console_status:
 
 ;*******************************************************************
 ; BDOS call (function 12) return version number
+
 return_version:
 	ld	hl,022h		; pretend to be CP/M 2.2
 	ret
 
 ;*******************************************************************
 ; BDOS call (function 13) reset disk system (and DMA address)
+
 reset_dma:
 	ld	hl,cpmdma
 	ld	(dmaadr),hl
-	jp	ret_hl_0
+	ret
+
+;*******************************************************************
+; BDOS call (function 14) select disk
+;
+; On entry: IYL contains the selected disk (0..15)
+
+select_disk:
+	ld	a,iyl		; which drive?
+	or	a		; only drive A: (0)
+	jp	z,login		; activate this disk and return
+				;  (build allocation vector)
+	ld	hl,04ffh	; return "invalid drive" error
+	ret
 
 ;*******************************************************************
 ; BDOS call (function 15) open file.
 ;
 ; On entry: IY -> pointer to FCB
-;
+
 openfile:
   if DEBUG and DBG_FIO
 	call	$PSTR
@@ -671,7 +675,7 @@ ret255:
 ; BDOS call (function 16) close file
 ;
 ; On entry: IY -> pointer to FCB
-;
+
 closefile:
 	ld	h,0
 	ld	l,(iy+fcblun)
@@ -692,7 +696,7 @@ closefile:
 ; BDOS call (function 17) search first
 ;
 ; On entry: IY -> pointer to FCB
-;
+
 search_first:
   if DBG_SRH and DEBUG
 	call	$PSTR
@@ -863,7 +867,7 @@ sf_err:
 
 ;******************************************************************
 ; BDOS call (function 18) search next
-;
+
 search_next:
   if 0;DBG_SRH and DEBUG
 	call	$PSTR		; show we've been called
@@ -951,13 +955,13 @@ sf_5:
   endif ;DEBUG
 sf_8:
 
-  if 1
+  if DUMMYRD
 ;**Dummy read - otherwise first random read of INDEXF.SYS is wrong record
 	ld	de,idxentry
 	ld	bc,IESZ
 	call	FREAD
 	jp	c,sf_err
-  endif ;1
+  endif ;DUMMYRD
 
 	; fall through into search next
 
@@ -1422,7 +1426,7 @@ compext:
 ; BDOS call (function 19) delete file
 ;
 ; On entry: IY -> pointer to FCB
-;
+
 delete:
 	call	getname
 	push	hl
@@ -1438,7 +1442,7 @@ delete:
 ; BDOS call (function 20) read file sequential
 ;
 ; On entry: IY -> pointer to FCB
-;
+
 readfile:
 	call	read128		; read sector
 ;    nread = read(blk->desc, dmaadr, 128);
@@ -1486,7 +1490,7 @@ ret_hl_1:
 ; BDOS call (function 21) write file sequential
 ;
 ; On entry: IY -> pointer to FCB
-;
+
 writefile:
 	call	write128
 ;    if (write(blk->desc, dmaadr, 128) != 128 )
@@ -1504,7 +1508,7 @@ wr_success:
 ; CPM bdos call (function 22) make (create) a file
 ;
 ; On entry: IY -> pointer to FCB
-;
+
 makefile:
   if DBG_FIO and DEBUG
 	call	$PSTR
@@ -1550,7 +1554,7 @@ mf_0:	ld	(hl),c		; clear EX S1 S2 RC and
 ;
 ; The first filename at fcb.name is renamed to the one given
 ; at fcb.dm (16 byte offset).
-;
+
 rename:
 	push	iy		; save pointer to CP/M FCB
   if DBG_FIO and DEBUG
@@ -1641,6 +1645,7 @@ rn_err:
 
 ;*******************************************************************
 ; BDOS call (function 26) set DMA address
+
 set_dma:
 	ld	hl,(arg)
 	ld	(dmaadr),hl
@@ -1648,20 +1653,21 @@ set_dma:
 
 ;*******************************************************************
 ; BDOS call (function 27) get allocation vector
+
 get_alv:
 	ld	hl,alv
 	ret
 
 ;*******************************************************************
 ; BDOS call (function 31) get address of disk parameter block
-;
+
 get_alloca:
 	ld	hl,dpb
 	ret
 
 ;*******************************************************************
-; BDOS call (function 33) read random.
-;
+; BDOS call (function 33) read random
+
 readrandom:
 	call	_rseek
 	call	read128
@@ -1682,8 +1688,8 @@ ret_hl_0:
 	ret
 
 ;*******************************************************************
-; BDOS call (function 34) write random.
-;
+; BDOS call (function 34) write random
+
 writerandom:
 	call	_rseek
 	call	write128
@@ -1713,18 +1719,90 @@ ue_0:	inc	a
 	ret
 
 ;*******************************************************************
+; BDOS call (function 35) compute file size
+;
+; On entry: IY -> FCB Address
+
+comp_filesize:
+	ld	c,fcbex		; Search up to the extent field
+	call	search
+	ld	de,0		; Zero the random record number
+	ldw	(iy+fcbran),de	;  (24-bit) in the FCB
+	ld	(iy+fcbranh),e
+getsize:
+	call	end_of_dir	; Have we reached the end
+	ret	z		; Yes - done
+	call	getdptra	; Point HL to directory entry
+	ld	de,fcbrc	; DE is offset to record-count
+	call	compute_rr	; compute random records to BC
+	ld	e,a		; save possible carry
+	ld	a,c
+	sub	(iy+fcbran)	; compare with random record
+	ld	a,b
+	sbc	a,(iy+fcbran+1)
+	ld	a,e
+	sbc	a,(iy+fcbranh)
+	jr	c,getnextsize	; Carry if ran > directory
+	ld	(iy+fcbranh),e
+	ldw	(iy+fcbran),bc
+getnextsize:
+	call	searchn
+	jr	getsize
+
+; Compute random records to BC
+compute_rr:
+	ex	de,hl
+	add	hl,de
+	ld	c,(hl)		; fetch rc
+	ld	b,0
+	ld	hl,fcbext	; point to extent offset
+	add	hl,de
+	ld	a,(hl)		; get extent
+	rrca
+	and	80h
+	add	a,c
+	ld	c,a
+	ld	a,0
+	adc	a,b
+	ld	b,a
+	ld	a,(hl)
+	rrca
+	and	0Fh
+	add	a,b
+	ld	b,a
+	ld	hl,fcbmodnum
+	add	hl,de		; point to S2 byte
+	ld	a,(hl)
+	add	a,a
+	add	a,a
+	add	a,a
+	add	a,a
+	push	af
+	add	a,b
+	ld	b,a
+	push	af		; possible second carry
+	pop	hl
+	ld	a,l
+	pop	hl
+	or	l
+	and	01h		; carry out is in bit 0 of A
+	ret
+
+;*******************************************************************
 ; BDOS call (function 36) set random record. Max file length 8192 K
 ;
 ; On entry: IY -> pointer to FCB
-;
+
 setrandom:
+	;** We ignore high 8 bits of record number (always zero)
 	ldw	hl,(iy+fcbrec)
 	ldw	(iy+fcbran),hl
+	ld	(iy+fcbranh),0
 	ret
 
 ;*******************************************************************
 ; BDOS call (function 37) reset drive
-;
+
 reset_drive:
 	ld	hl,(arg)	; argument is a drive vector
 	dec	hl		; (only 1 drive A: - bit 0)
@@ -1739,7 +1817,7 @@ reset_drive:
 	subttl	Internal emulator routines
 ;*******************************************************************
 ; Copy parameter pointed to by IX into the CP/M FCB pointed to by HL
-;
+
 fillfcb:
 	ld	(hl),0		; always the current drive
 	inc	hl		; advance HL to fcbname
@@ -1825,6 +1903,7 @@ ff_ewild:
 
 ;*******************************************************************
 ; return number of available input chars in HL
+
 char_avail:
 	call	$FLUSH		; make sure all is output first
 	ld	hl,0
@@ -1849,13 +1928,13 @@ ca_1:	sub	h
 
 ;*******************************************************************
 ; read one character from stdin
+
 readchar:
-	call	$TTGC		; get a character
-	ld	(char),a
-	ret
+	jp	$TTGC		; get a character into A
 
 ;*******************************************************************
 ; write one char from A to stdout
+
 writechar:
 	push	hl		; don't change HL
 	ld	c,a
@@ -1869,6 +1948,7 @@ writechar:
 ; Under RSX280 - returns bytes read in BC and status in HL
 ; (0=no errors, -1=error with reason in errno variable)
 ; Also Carry flag is set on error.
+
 read128:
 	ld	h,0
 	ld	l,(iy+fcblun)	; LUN in HL
@@ -1886,6 +1966,7 @@ read128:
 ; write 128 bytes
 ;
 ; Returns bytes written in BC
+
 write128:
 	ld	h,0
 	ld	l,(iy+fcblun)
@@ -2158,22 +2239,6 @@ parm_0:
 	jp	tpa		; start transient program
 
 ;*******************************************************************
-; Detach console terminal
-DETACH: ld	hl,IO.DET	; change function code to detach
-	ld	(attqio+Q.FUNC),hl
-	; fall through
-
-; Attach console terminal with ASTs
-ATTACH:	ld	hl,attqio
-	SC	.QIO		; .QIOW
-	ret	c		; if queuing failed
-	ld	a,(QIOSB)	; fetch return code
-	or	a		; clear carry
-	ret	z
-	scf
-	ret
-
-;*******************************************************************
 ; Unsolicited character input AST routine
 TTAST:	ex	(sp),hl		; fetch character from stack, save HL
 	push	de
@@ -2288,7 +2353,7 @@ arg_4:
 ;*******************************************************************
 ; Check if any character is available in the console buffer
 ;
-; Returns zero in A if none available
+; Returns Z flag-bit set if none available
 ;
 
 $TTGST:	call	$FLUSH
@@ -2459,42 +2524,16 @@ TTCLR:	push	hl
 	ret
 
 ;*******************************************************************
-;; These routines are for the emulator.  They do not
-; update the cursor position like their CP/M counterparts
-;
-;Newline
-$CRLF:	call	$PRINT
-	defb	CR,LF,0
-	ret
-
-$PSTR:
-	call	$CRLF
-	ld	a,'%'
-	call	$TTOUT
-
-;Print in-line message terminated by a NUL
-$PRINT:
-	ex	(sp),hl
-	call	$MSGHL
-	ex	(sp),hl
-	ret
-
-;Print message pointed to by HL terminated by a NUL
-$MSGHL:	ld	a,(hl)
-	inc	hl
-	or	a
-	ret	z
-	call	$TTOUT
-	jr	$MSGHL
-
-;*******************************************************************
 ; Login the default directory and build an allocation vector
 ;
 login:
+	ld	hl,(dmaadr)	; save CP/M DMA address on stack
+	push	hl
+
 	ldw	(blocks),0	; zero block count
 	ld	hl,alv
 	xor	a		; clear allocation vector
-	ld	b,a		; (allocation vector is 256 bytes)
+	ld	b,a		;  (allocation vector is 256 bytes)
 lo_0:	ld	(hl),a
 	inc	hl
 	djnz	lo_0
@@ -2567,19 +2606,11 @@ lo_6:	scf			; calculate 2**E
 	dec	e
 	jr	nz,lo_6
 	ld	(hl),a		; store into vector
-	ret
 
-;*******************************************************************
-; Exit program and return to RSX280
-;
-$EXIT:	call	close_all	; close all files
+	pop	hl		; restore CP/M DMA address
+	ld	(dmaadr),hl
 
-	call	$FLINP		; flush input buffer
-	ld	c,LUN_TI
-	call	DETACH
-	ld	hl,EX.SUC	; exit to monitor with success
-	SC	.EXIT
-	halt			; we should never get here
+	jp	ret_hl_0	; return success with HL = 0
 
 ;*******************************************************************
 ;
@@ -2701,12 +2732,12 @@ op_5:
 	call	FOPEN		; open existing file
 	jr	c,op_err
 
-    if 1
+    if DUMMYRD
 	ld	de,bufdir	; dummy read
 	ld	bc,recsiz	;   otherwise first write
 	call	FREAD		;   fails to update file
 	; skip checking the return status
-    endif
+    endif ;DUMMYRD
 
 op_6:
 
@@ -2715,12 +2746,14 @@ op_6:
 	defb	'OPEN-I-File opened',CR,LF,0
     endif ;DEBUG
 
+    if DUMMYSK
 	ld	d,0		; seek to the beginning
 	ld	e,d
 	ld	b,d
 	ld	c,d
 	call	FSEEK
 	jr	c,op_err
+    endif ;DUMMYSK
 
 	ld	hl,(opnlun)	; return the LUN of opened file
 	or	a		; clear carry
@@ -3088,7 +3121,7 @@ warmboot:
 	jp	_conout		;4 Console Output
 	jp	dummy		;5 List Output
 	jp	dummy		;6 Punch Output
-	jp	dummy		;7 Reader Input
+	jp	_rdreof		;7 Reader Input
 	jp	dummy		;8 Home
 	jp	_seldsk		;9 Select Disk
 	jp	dummy		;10 Set Track
@@ -3103,13 +3136,11 @@ warmboot:
 ;
 ; BIOS console input
 _conin:
-	call	readchar
-	ret
+	jp	readchar
 
 ; BIOS console output
 _conout:
 	ld	a,c
-	ld	(char),a
 	jp	writechar
 
 
@@ -3120,6 +3151,11 @@ _conist:
 	or	l
 	ret	z		; no char available
 	ld	a,0ffh
+	ret
+
+; BIOS reader input
+_rdreof:
+	ld	a,CTRLZ		; always end-of-file
 	ret
 
 ; BIOS select disk
@@ -3349,6 +3385,35 @@ sl_12:	ld	a,c
 	ret
 
 ;*******************************************************************
+; These routines are for the emulator.  They do not update
+; the cursor position like their CP/M counterparts
+;
+;Newline
+$CRLF:	call	$PRINT
+	defb	CR,LF,0
+	ret
+
+$PSTR:
+	call	$CRLF
+	ld	a,'%'
+	call	$TTOUT
+
+;Print in-line message terminated by a NUL
+$PRINT:
+	ex	(sp),hl
+	call	$MSGHL
+	ex	(sp),hl
+	ret
+
+;Print message pointed to by HL terminated by a NUL
+$MSGHL:	ld	a,(hl)
+	inc	hl
+	or	a
+	ret	z
+	call	$TTOUT
+	jr	$MSGHL
+
+;*******************************************************************
 ;
 ; CP/M BDOS emulator variables
 
@@ -3361,11 +3426,10 @@ oldstk:	defs	2		; saved stack pointer
 arg:	defs	2		; entry argument from DE
 func:	defs	2		; entry function code from C
 dmaadr:	defs	2		; current DMA address
-char:	defs	2
 errno:	defs	2		; error code
 lret:
 aret:	defs	2		; address value return result
-dirloc:	defs	1		; directory entry located
+dirloc:	defs	1		; directory entry located in search
 
 ;*******************************************************************
 ;
@@ -3643,6 +3707,35 @@ crlfp0:	ld	a,(column)	; move the cursor back to starting
 	ret	nc
 	call	space
 	jr	crlfp0
+
+;*******************************************************************
+; Detach console terminal
+DETACH: ld	hl,IO.DET	; change function code to detach
+	ld	(attqio+Q.FUNC),hl
+	; fall through
+
+; Attach console terminal with ASTs
+ATTACH:	ld	hl,attqio
+	SC	.QIO		; .QIOW
+	ret	c		; if queuing failed
+	ld	a,(QIOSB)	; fetch return code
+	or	a		; clear carry
+	ret	z
+	scf
+	ret
+
+;*******************************************************************
+; Exit program and return to RSX280
+;
+$EXIT:	call	close_all	; close all files
+
+	call	$FLINP		; flush input buffer
+	ld	c,LUN_TI
+	call	DETACH
+	ld	hl,EX.SUC	; exit to monitor with success
+	SC	.EXIT
+	halt			; we should never get here
+
 	page
 	subttl	Variables
 ;*******************************************************************
@@ -3734,7 +3827,8 @@ logged:	defs	1		; the drive is logged-in (if non zero)
 blocks:: defs	2		; blocks used
 logfcb:	defb	'?'		; search fcb to get all files
 	defb	'????????'	; filename
-	defb	'???',0,0,0,0	; ext, ex, s1, s2 and rc
+	defb	'???'		; filetype
+	defb	'?','?','?',0	; ex, s1, s2 and rc
 	defs	16		;  on the emulated drive
 
 alv::	defs	((2048-1) shr 3)+1	; DSM/8+1

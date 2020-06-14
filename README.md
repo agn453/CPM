@@ -1,11 +1,10 @@
-# CPM
-CP/M Emulator for RSX280
-========================
+CPM - A CP/M Emulator for RSX280
+================================
 
 This repository contains a CP/M emulator for the RSX280 operating system.
 
 It is written in Zilog Z280 assembly language and is based on an earlier
-version for UZI280 (a unix edition 7 operating system for the Z280)
+version for UZI-280 (a Unix edition 7 operating system for the Z280)
 by Stefan Nitschke and released into the Public Domain in 1996.
 
 RSX280 is being developed by Hector Peraza and is available from
@@ -23,6 +22,13 @@ available.
 Further documentation will be added at a later time.
 
 Revision history is now in reverse chronological order.
+
+
+Update: 14-Jun-2020
+-------------------
+
+Added Compute File Size (BDOS function 35) and tried to squeeze
+a few more bytes of code-space.
 
 
 Update: 12-Jun-2020
@@ -88,7 +94,7 @@ large number of files in your home directory).
 
 As a consequence, I've approached this from the CP/M BDOS source
 and made some assumptions.  Firstly, all files visible from CP/M
-*MUST* be only eight-character filenames (not nine), and only
+*MUST* be only up to eight-character filenames (not nine), and only
 files with version number 1 (e.g. FILE.DAT;1) are seen by CP/M
 (as FILE.DAT).
 
@@ -169,7 +175,7 @@ X>^Z
 Update: 01-May-2020
 -------------------
 
-The original UZI280 version was missing some CP/M BDOS functions.
+The original UZI-280 version was missing some CP/M BDOS functions.
 These have been added.  Console I/O and Disk file Open/Create/Read/Write
 appear to be working.   Still to-do file Remove, Random access Read/Write,
 Directory Search and some other BDOS functions.
