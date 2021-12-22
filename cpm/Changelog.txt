@@ -87,7 +87,7 @@ Starting from Tony Nicholson's V0.99
 - Read/Write random record should set the sequential file position.
 
 - More programs tested: ASM, MAC, RMAC, DR LINK, MBASIC, T3XZ compiler,
-  Turbo Pascal 3.0; all seem to be working OK. OTOH, PIP does not finish
-  copying a file: the delete and rename functions don't seem to be working
-  OK.
+  Turbo Pascal 3.0; all seem to be working OK.
+
+- Fixed the delete and rename functions; now PIP succeeds copying a file.
 

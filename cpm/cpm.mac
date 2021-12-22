@@ -1496,6 +1496,9 @@ rename:
 ;**TODO same as above - should lookup to get version number
 
 	ld	ix,FDBOLD
+	ld	hl,1
+	ldw	(ix+F.VER),hl
+	ld	(ix+F.ATTR),a	; filename, ext and vers valid
 	ld	a,FN.NAME or FN.EXT or FN.VER
 	ld	(ix+F.ATTR),a	; filename and ext are valid
 	ld	a,(iy+fcbdrive)
@@ -1503,6 +1506,8 @@ rename:
 	call	SETDIR
 
 	ld	ix,FDBNEW
+	ld	hl,1
+	ldw	(ix+F.VER),hl
 	ld	a,FN.NAME or FN.EXT or FN.VER
 	ld	(ix+F.ATTR),a	; filename and ext are valid
 	ld	a,(iy+fcbdrive)
@@ -2500,7 +2505,7 @@ ini2:	ld	(ix+F.EXT),' '	; clear extension
 SETDIR:	call	set_1		; index into map table
 	ret	c
 	ld	bc,3+9		; copy device name, unit number and directory
-	ld	a,FN.DEV
+	ld	a,FN.DEV OR FN.DIR
 	jr	set_3
 
 ; Same as above, but set only device and unit. Returns HL pointing to
@@ -2509,7 +2514,7 @@ SETDIR:	call	set_1		; index into map table
 SETDEV:	call	set_1		; index into map table
 	ret	c
 	ld	bc,3		; copy only device name and unit number
-	ld	a,FN.DEV OR FN.DIR
+	ld	a,FN.DEV
 set_3:	push	de
 	ex	de,hl
 	addw	hl,F.DEV	; point to F.DEV field
