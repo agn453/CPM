@@ -56,8 +56,9 @@ DBG_SRH	equ	0004h		; search first/next debug
 DBG_ERR equ	8000h		; error debug
 DBG_ODT	equ	0100h		; debug with ODT
 
-;DEBUG	equ	DBG_ODT ;DBG_ERR or DBG_SRH
-DEBUG	equ	false
+;DEBUG	equ	DBG_ERR or DBG_SRH
+DEBUG	equ	DBG_ODT ;DBG_ERR or DBG_SRH
+;DEBUG	equ	false
 
 ; Include files and externals
 
@@ -87,7 +88,7 @@ RUBOUT	equ	7Fh
 ;
 ; Note: Build this program with a load address of 0000h.
 
-  if DEBUG and DBG_ODT
+  if DEBUG ;and DBG_ODT
 memsize	equ	56		; 56KB memory size with ODT
   else
 memsize	equ	62		; 61KB memory size
@@ -133,7 +134,6 @@ fcbmagic equ	31		; set to magic number if file open
 
 empty	equ	0E5h		; deleted or empty directory entry
 recsiz	equ	128		; record size (CP/M sector size)
-exsiz	equ	128		; maximum extents per directory entry
 maxdir	equ	1024		; number of directory entries
 dirlen	equ	32		; directory entry length (CP/M)
 dirspr	equ	recsiz/dirlen	; directory entries per sector
@@ -166,7 +166,6 @@ EFN_D	equ	8		; event flag for directory file
 EFN_IX	equ	9		; event flag for INDEXF.SYS
 
 ; Open File table offsets
-
 F_LNK	equ	0		; link to next entry in LRU list
 F_FID	equ	F_LNK+2		; file ID
 F_LUN	equ	F_FID+2		; LUN for this channel
@@ -256,7 +255,7 @@ entry:
 
 bdos2:
 	cp	maxbdosfn+1
-	ret	nc		; function number too big
+	jp	nc,ret_hl_0	; function number too big
 	add	a,a
 	ld	hl,bdostable	; index into table
 	add	hl,a
@@ -496,13 +495,8 @@ notc:
 	cp	c		; have we filled the buffer?
 	jp	c,readnx	; no
 readen:
- if 0
-	inc	hl		; store the line terminator in
-	ld	(hl),a		;  the buffer
- else
 	inc	hl
 	ld	(hl),0		; store a null terminator in the buffer
- endif
 
 	pop	hl		; end the line and save the
 	ld	(hl),b		;  number of characters entered
@@ -761,7 +755,7 @@ sf_7:	ld	a,00000001b
 
 	; IY also points to CP/M FCB
 	ld	a,(iy+fcbex)	; get extent from CP/M FCB
-	cp	'?'		; if extent is wildcard then clear
+	cp	'?'		; if extent is not wildcard then clear
 	jr	z,sf_9		; module number (s2 byte)
 	ld	(iy+fcbmodnum),0
 
@@ -861,8 +855,7 @@ searchn:
 	call	end_of_dir
 	jr	z,search_fin	; we reached the end - stop search
 
-	ld	hl,(searcha)
-	ex	de,hl		; DE points to user FCB
+	ld	de,(searcha)	; DE points to user FCB
 	ld	a,(de)		; keep searching if first char is 0E5h
 	cp	empty
 	jr	z,searchnext
@@ -966,8 +959,7 @@ getdptra:
 
 ; Check if we're past the end of the directory
 compcdr:
-	ld	hl,(dcnt)
-	ex	de,hl		; directory counter to DE
+	ld	de,(dcnt)	; directory counter to DE
 	ld	hl,(cdrmaxa)	; address of maximum to HL
 	ld	a,e
 	sub	(hl)		; low(dcnt) - low(cdrmax)
@@ -976,23 +968,39 @@ compcdr:
 	sbc	a,(hl)		; high(dcnt) - high(cdrmax)
 	ret			; Carry is set if cdrmax > dcnt
 
+; Compare extent number in A with that in C
+; Return non-zero if they don't match.
+compext:
+	push	bc
+	push	af
+	ld	a,(extmsk)
+	cpl
+	ld	b,a		; B has negated form of extent mask
+	ld	a,c
+	and	b
+	ld	c,a		; low bits removed from C
+	pop	af
+	and	b		; low bits removed from A
+	sub	c
+	and	maxext
+	pop	bc
+	ret
+
 ; Read next directory entry
 read_dir:
-	ld	hl,(dirmax)	; maximum dir entries -1 to DE
-	ex	de,hl
+	ld	de,(dirmax)	; maximum dir entries -1 to DE
 	ld	hl,(dcnt)	; increment directory entry count
 	inc	hl
 	ld	(dcnt),hl
-	push	de		; HL = DE-HL
 	ex	de,hl
-	subw	hl,de
-	pop	de
-	jr	nc,read_dir0
-	jr	set_end_dir	; set dcnt to end of directory
+	cpw	hl,de		; dcnt > dirmax?
+	ex	de,hl
+	jr	nc,read_dir0	; no
+	jr	set_end_dir	; yes, set dcnt to end of directory
 
 read_dir0:
-	ld	a,(dcnt)
-	and	dskmsk		; use the lower 2 bits
+	ld	a,l
+	and	dskmsk		; use the lower 2 bits of dcnt
 	mult	a,dirlen	;  to point to directory entry
 	ld	a,l
 	ld	(dptr),a	; save pointer
@@ -1000,7 +1008,7 @@ read_dir0:
 	ret	nz		;  have read the next entry
 
 	push	bc
-	call	rd_dir
+	call	rd_dir		; read next directory sector
 	pop	bc
 	ret
 
@@ -1133,66 +1141,6 @@ dbg_1:	ld	a,(hl)
 	or	l
 	jp	z,rd_nxtd	; skip to next entry
 
- if 0
-	ldw	hl,(ix+IE.USED)	; 512-byte blocks used to BCHL
-	ld	b,0
-	ld	c,(ix+IE.USED+2)
-	ex	de,hl		; low 16-bits to DE while
-	ldw	hl,(ix+IE.LBCN)	;  we get last block count into
-	ex	de,hl		;  DE, and low 16-bits back to HL
-	ld	a,c
-	or	b		; greater than 65535 blocks?
-	jr	nz,sz_compute	; yes - it's a big file
-	ld	a,h
-	or	l		; no blocks allocated?
-	jr	z,sz_zero	; yes - it's an empty file
-sz_compute:
-	push	de		; save last block byte count
-	multuw	hl,4		; convert blocks to 128-byte sectors -> DEHL
-	push	hl		; save low 16-bits on stack
-	ld	h,b
-	ld	l,c
-	add	hl,bc
-	add	hl,hl		; high byte * 4 too in BC
-	add	hl,de		; add it to DE (high 16-bits)
-	ex	de,hl		; back to DE
-	pop	hl		; sectors now in DEHL
-	ex	(sp),hl		; low 16-bits back to stack
-	; HL now contains last block byte count
-	divu	hl,recsiz	; divide it by a sector-size
-	push	af		; save quotient in A
-	ld	a,l		; is the remainder 0?
-	or	a
-	jr	z,sz_1		; yes - it's an exact sector size
-	pop	af		; restore quotient to A
-	inc	a		; add an extra sector
-	jr	sz_2
-sz_1:	pop	af		; restore quotient to A
-sz_2:	pop	hl		; restore low 16-bits
-sz_3:	cp	4		; was the last sector full?
-	jr	nc,sz_dehl	; yes - no need to adjust
-	inc	a
-	ld	c,l
-	dec	l		; no - reduce the sector count
-	inc	c
-	dec	c
-	jp	nz,sz_3		; any borrow?
-	ld	c,h
-	dec	h		; yes, decrement H too
-	inc	c
-	dec	c
-	jp	nz,sz_3		; any borrow?
-	dec	de		; yes, decrement DE too
-	jr	sz_3
-
-sz_zero:
-	ld	d,0		; file size is zero
-	ld	e,d
-	ld	h,d
-	ld	l,d
-
-sz_dehl:
- else
 	ld	hl,(ix+IE.LBCN)
 	ld	de,127		; round last block byte count to upper
 	add	hl,de		;  CP/M record limit
@@ -1212,7 +1160,7 @@ sz_1:	xor	a
 	rla
 	ld	e,a		; result now in DEHL
 	ld	d,0
- endif
+
 	; DEHL now has the number of used sectors for this file.
 	; We can have up to 128 sectors (128-byte) per extent
 	; and extents range between 0 and 31 (32 of them), The
@@ -1225,8 +1173,7 @@ sz_1:	xor	a
 	jp	nz,rd_nxtd	; yes, silently ignore huge files
 
 rd_more:
-
-  if 0 and DBG_SRH and DEBUG
+  if DBG_SRH and DEBUG
 	call	$PSTR
 	defb	'size=',0
 	ld	hl,(dirfsize)
@@ -1245,52 +1192,48 @@ rd_more:
 	ldir
 	; DE now points to the extent byte
 	ld	hl,(dirfsize)	; get file size in sectors to HL
-	cpw	hl,exsiz+1	; is it less than a full extent?
+	ld	bc,(exsiz)
+	inc	bc
+	cpw	hl,bc		; is it less than a full extent?
 	jr	c,rd_single	; yes - only a single extent left
 
-	ex	de,hl		; pointer back to HL, size in DE
 	ld	a,(extent)	; copy extent byte
-	ld	(hl),a
-	inc	hl
-	ld	(hl),0	;;;
-	inc	hl
-	ld	(hl),0	;;;
-	inc	hl
-	ld	(hl),exsiz	; record count is 80h
-	ex	de,hl		; size back to HL, ptr to DE
-	subw	hl,exsiz	; subtract 128 sectors
+	ld	bc,(exsiz)	; record count is one full extent
+	call	rd_store	; store extent and record count
+	subw	hl,(exsiz)	; subtract extent sectors
 	ld	(dirfsize),hl	; save for next extent
 	inc	(extent)	; increment extent
 	jr	rd_ndp
 
 rd_single:
-	ex	de,hl		; pointer back to HL, size in DE
-	ld	a,(extent)
-	ld	(hl),a		; copy extent byte
-	inc	hl
-	inc	hl
-	inc	hl
-	ld	(hl),e		; record count
-	ex	de,hl		; ptr back to DE
+	ld	a,(extent)	; get extent
+	ld	c,l		; get remaining sectors
+	ld	b,h
+	call	rd_store	; store extent and record count
 	ldw	(dirfsize),0	; clear size of file
 rd_ndp:
 	ex	de,hl
 	ld	de,(dirrec)	; store directory entry
 	inc	hl		;  number in the first
-	ldw	(hl),de		;  two allocation bytes
+	ldw	(hl),de		;   two allocation bytes
 	inc	hl
 	inc	hl
 	ld	de,(idxrec)	; and INDEXF.SYS record entry
 	ldw	(hl),de		;  in the next two allocation bytes
 
 rd_next:
-  if 0 and DBG_SRH and DEBUG
+  if DBG_SRH and DEBUG
 	push	bc
 	push	hl
 	call	$PSTR
 	defb	'entry',0
+    if 1
 	call	getdptra	; print out directory entry
 	ld	bc,dirlen
+    else
+	ld	hl,(buffa)
+	ld	bc,128
+    endif
 	call	$DUMPM
 	call	$TTGC
 	cp	'Q'
@@ -1307,22 +1250,45 @@ rd_next:
 
 	ret			; done if dptr is zero
 
-; Compare extent number in A with that in C
-; Return non-zero if they don't match.
-compext:
-	push	bc
-	push	af
-	ld	a,(extmsk)
-	cpl
-	ld	b,a		; B has negated form of extent mask
+; Store extent and record count in fake directory entry.
+; On input, DE points to the extent byte in directory entry,
+; A contains extent and BC the record count for this extent.
+rd_store:
+	ex	de,hl		; HL = pointer to directory entry
+	push	de
+	push	hl
+	ld	l,a
+	ld	h,0
+	call	shift_extent	; HL = extent SHL extmsk
+	ex	de,hl
+	rl	c		; shift 7th bit of rc
+	rl	b		;  into overflow byte of rc
+	srl	c		; restore rc
 	ld	a,c
-	and	b
-	ld	c,a		; low bits removed from C
-	pop	af
-	and	b		; low bits removed from A
-	sub	c
+	or	a
+	jr	nz,rd_s1
+	dec	b		; adjust if remainder is zer0
+	ld	c,80h
+rd_s1:	ld	a,e
+	or	b
+	ld	e,a		; DE = logical extent number
+	pop	hl
+	ld	a,e
 	and	maxext
-	pop	bc
+	ld	(hl),a		; store low bits of extent
+	inc	hl
+	ld	(hl),0		; clear s1
+	inc	hl
+	ex	de,hl
+	add	hl,hl
+	add	hl,hl
+	add	hl,hl
+	ex	de,hl
+	ld	(hl),d		; store excess into s2
+	inc	hl
+	ld	(hl),c		; store rc
+	pop	de
+	ex	de,hl
 	ret
 
 ;*******************************************************************
@@ -1333,7 +1299,6 @@ compext:
 delete:
 	; TODO:
 	; - check for file open?
-	; - set dev and dir
 
 	call	getname		; convert CP/M FCB to RSX280 FDB
 	push	hl
@@ -1494,7 +1459,6 @@ rename:
 	ldir
 
 ;**TODO same as above - should lookup to get version number
-
 	ld	ix,FDBOLD
 	ld	hl,1
 	ldw	(ix+F.VER),hl
@@ -1623,21 +1587,23 @@ set_seq_pos:
 	and	7Fh
 	ld	(iy+fcbcr),a
 	add	hl,hl
-	ld	e,0
-	rl	e
+	rl	e		; save high bit
 	ld	a,h
 	and	1Fh
-	ld	(iy+fcbex),a
-	rla
-	rl	e
-	rla
-	rl	e
-	rla
-	rl	e
+	ld	(iy+fcbex),a	; store extent
+	ld	a,h
+	rr	e
+	rra			; shift high bit back in
+	rra			; now shift extent overflow bits into position
+	rra
+	rra
+	rra
+	and	0Fh
+	ld	e,a
 	ld	a,(iy+fcbs2)
 	and	80h
 	or	e
-	ld	(iy+fcbs2),a
+	ld	(iy+fcbs2),a	; store s2
 	ret
 
 ;*******************************************************************
@@ -1663,7 +1629,6 @@ writerandom:
 ; On entry: IY -> FCB Address
 
 comp_filesize:
- if 0
 	ld	c,fcbex		; Search up to the extent field
 	call	search
 	ld	de,0		; Zero the random record number
@@ -1687,42 +1652,6 @@ getsize:
 getnextsize:
 	call	searchn
 	jr	getsize
- else
-	call	GETFIL
-	jp	c,ret255
-	ld	a,(ix+F_LUN)
-	ld	(qrattr+Q.LUN),a
-	ld	hl,qrattr
-	SC	.QIO		; read attributes
-	jp	c,ret255
-	ld	a,(FIOSB)
-	or	a
-	jp	nz,ret255
-
-	ld	hl,(FDB_F1+F.LBCNT)
-	ld	de,127		; round last block byte count to upper
-	add	hl,de		;  CP/M record limit
-	add	hl,hl		; move top 3 bits of result (9..7)
-	ld	a,h		;  to 2..0
-	and	7
-	ld	e,a		; prepare for addition (D still = 0)
-	ld	hl,(FDB_F1+F.NUSED)
-	jr	z,comp_1
-	dec	hl		; don't count partially filled block (yet)
-comp_1:	xor	a
-	add	hl,hl		; multiply 512-byte blocks by 4
-	rla			;  to obtain number of 128-byte records
-	add	hl,hl		;   with result in AHL
-	rla
-	add	hl,de		; add records contained in last partial block
-	rla
-	ldw	(iy+fcbran),hl
-	ld	(iy+fcbranh),a
-	xor	a
-	ld	l,a
-	ld	h,a
-	ret
- endif
 
 ; Compute current record to BC
 
@@ -1746,14 +1675,14 @@ c1:	ex	de,hl
 	add	a,c		; add to rc
 	ld	c,a
 	ld	a,0
-	adc	a,b		;  with carry (unlikely since rc = 0..127)
+	adc	a,b		;  with carry
 	ld	b,a
 	ld	a,(hl)		; get extent again
 	rrca			; drop low bit (already added to rc)
 	and	0Fh		; remainder is 0..15
 	add	a,b		; add to high byte of record-count
-	ld	b,a		;  (very likely 0 at this point)
-	ld	hl,fcbmodnum	;   result is 0..4095 (0..0FFF)
+	ld	b,a
+	ld	hl,fcbmodnum
 	add	hl,de		; point to S2 byte (0..15..31)
 	ld	a,(hl)
 	add	a,a		; get it into high nibble
@@ -2162,7 +2091,6 @@ ldcom3:	; .COM file loaded
 
 	; now set-up the CP/M default
 	; File Control Block at 005Ch
-
 	ex	ix,hl		; point to command tail
 	push	hl		; remember address
 	call	getnb		; skip blanks
@@ -2226,6 +2154,9 @@ login:	ld	hl,(dmaadr)	; save CP/M DMA address on stack
 lo_0:	ld	(hl),a
 	inc	hl
 	djnz	lo_0
+
+	call	compute_exsiz	; compute extent size
+	ld	(exsiz),hl
 
 	ld	hl,bufdir	; use directory sector buffer
 	ld	(dmaadr),hl	; set dma address
@@ -2300,6 +2231,17 @@ lo_7:	ld	(hl),a		; store into vector
 	ld	(dmaadr),hl
 
 	jp	ret_hl_0	; return success with HL = 0
+
+compute_exsiz:
+	ld	hl,128		; max rc value
+shift_extent:
+	ld	a,(extmsk)
+	or	a
+	ret	z
+ce_1:	add	hl,hl
+	dec	a
+	jr	nz,ce_1
+	ret
 
 ;*******************************************************************
 ;
@@ -3846,6 +3788,7 @@ searchl:
 
 dptr:	defs	1		; directory entry pointer 0,32,64,96
 dcnt:	defs	2		; directory counter
+exsiz:	defs	2		; extent size in sectors
 
 direntry:
 	defs	DESZ		; directory file record

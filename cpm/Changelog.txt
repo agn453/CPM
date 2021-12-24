@@ -72,7 +72,7 @@ Starting from Tony Nicholson's V0.99
 - If a file cannot be open in r/w mode, try r/o mode.
 
 - BDOS function 35 (compute file size) now computes file size from the
-  RSX280 file attributes (faster tha doing a search first/next call.)
+  RSX280 file attributes (faster than doing a search first/next call.)
 
 
 21/12/21
@@ -90,4 +90,19 @@ Starting from Tony Nicholson's V0.99
   Turbo Pascal 3.0; all seem to be working OK.
 
 - Fixed the delete and rename functions; now PIP succeeds copying a file.
+
+
+23/12/21
+
+- BDOS function 35: reverted changes back to computing size via directory
+  scan, as the function does not require the file to be open.
+
+- Extent size is larger than 128 for the emulated 4-block "disk". The search
+  first/next functions now take into account the extent mask; this keeps
+  NULU happy and also fixes the problem of large files being reported twice
+  (or more) in a search next function.
+
+- CP/M BDOS returns zero for illegal function numbers. This is used by some
+  applications that issue special ZSDOS calls to determine whether they are
+  running under ZSDOS or vanilla CP/M.
 

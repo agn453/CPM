@@ -19,7 +19,7 @@ all: cpm.tsk
 $(OBJS): %.rel: %.mac *.inc
 	$(ZXCC) $(ZSM4) -"=$</l"
 
-cpm.tsk: $(OBJS)
+cpm.tsk: $(OBJS) odt.lib
 	$(ZXCC) $(TKB) -"$@,cpm,cpm=cpm/ofmt=tsk,odt/lb/load=0/task=...CPM/asg=TI:5,SY:1-4,SY:6-8"
 
 clean:
