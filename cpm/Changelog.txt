@@ -120,3 +120,5 @@ Starting from Tony Nicholson's V0.99
 - The main routine now allows changing the current disk with a 'd:' command
   like CP/M CCP does.
 
+- Reset the BDOS if an application exits via warm boot vector or BDOS
+  function 0, but not if it restores the stack and returns to CCP.

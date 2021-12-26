@@ -1902,10 +1902,6 @@ m2:	ldw	(CCFLG),0	; enable ctrl-C break
 	call	ODT$
  endif
 
-	ld	c,13
-	call	entry		; Log-in the first emulated drive
-				;  (and build an allocation vector)
-
 reentry:
 	; make BDOS and BIOS entry points
 	ld	a,0c3h
@@ -1916,7 +1912,10 @@ reentry:
 	ld	hl,entry
 	ld	(cpmentry+1),hl
 
-	call	$CRLF		; output prompt
+	ld	c,13
+	call	entry		; reset BDOS
+
+getcmd:	call	$CRLF		; output prompt
 	ld	a,(cpmddr)
 	add	'A'
 	call	$TTOUT
@@ -1934,7 +1933,7 @@ reentry:
 
 	ld	a,(hl)		; how many characters entered?
 	or	a
-	jr	z,reentry	; none
+	jr	z,getcmd	; none
 
 	inc	hl
 	ld	a,(hl)		; look for Ctrl-Z
@@ -1942,9 +1941,9 @@ reentry:
 	jp	z,$EXIT		; yes, exit
 
 	call	getnb		; skip white-space
-	jr	z,reentry	; Z means there was nothing
+	jr	z,getcmd	; Z means there was nothing
 	cp	CR		; EOL?
-	jr	z,reentry
+	jr	z,getcmd
 
 	ex	ix,hl
 	ld	hl,COMFCB
@@ -1963,7 +1962,7 @@ reentry:
 	ld	e,a
 	ld	c,14
 	call	cpmentry	; else select drive
-	jp	reentry
+	jp	getcmd
 
 m_3:	ld	hl,COMEXT
 	ld	de,COMFCB+fcbext
@@ -1996,7 +1995,7 @@ nf1:	ld	a,(hl)		; output file name
 	djnz	nf1
 nf2:	call	$PRINT		; followed by a '?'
 	defb	'?',CR,LF,0	;  for unknown command
-	jp	reentry
+	jp	getcmd
 
 arg_5:	ld	de,tpa		; TPA address
 ldcom1:	push	de
@@ -2084,7 +2083,7 @@ m_2:	ld	a,c		; get length
 	ld	sp,bdos		; set stack pointer to base of BDOS
 
 	; Program loaded - off we go!
-	ld	hl,done		; push a return address
+	ld	hl,getcmd	; push a return address
 	push	hl		; to return to the CPM X> prompt
 	jp	tpa		; start transient program
 
@@ -3279,6 +3278,7 @@ fillfcb:
 	cp	':'		; drive specified?
 	jr	nz,ff_nodrv	; no
 	ld	a,(ix)
+	call	UCASE
 	sub	'A'-1
 	ld	(hl),a		; else store drive code
 	inc	ix
