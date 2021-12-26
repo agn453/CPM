@@ -343,15 +343,24 @@ write_console:
 ; or the character
 
 direct_console:
-	ld	a,iyl		; was (arg)
-	cp	0ffh
-	jr	nz,write_console
+	push	rc_1		; return via rc_1
+	ld	a,iyl
+	inc	a		; 0FFh?
+	jr	z,direct_input	; yes, return character if available
+	inc	a		; 0FEh?
+	jr	z,direct_status	; yes, return status
+	jr	write_console	; else output char
+
+direct_status:
 	call	char_avail
 	ld	a,h
 	or	l
+	ret
+
+direct_input:
+	call	direct_status
 	ret	z		; no char available, return zero
-	call	_conin
-	jr	rc_1
+	jp	_conin
 
 ;*******************************************************************
 ; BDOS call (function 9) print string
@@ -2959,7 +2968,6 @@ ast1:	call	qput		; store char in queue
 ;
 ; Returns A=0 and Z flag-bit set if none available
 ;
-
 $TTGST:	call	$FLUSH
 	push	ix
 	ld	ix,TTQ
@@ -2970,7 +2978,6 @@ $TTGST:	call	$FLUSH
 
 ;*******************************************************************
 ; Single-character input, no echo
-
 $TTGC:	call	$FLUSH		; send pending output to terminal
 	push	ix
 	push	hl

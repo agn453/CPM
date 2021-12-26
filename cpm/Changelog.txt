@@ -122,3 +122,6 @@ Starting from Tony Nicholson's V0.99
 
 - Reset the BDOS if an application exits via warm boot vector or BDOS
   function 0, but not if it restores the stack and returns to CCP.
+
+- Implemented subfunction 0FEh (return console status) of BDOS function 6.
+
