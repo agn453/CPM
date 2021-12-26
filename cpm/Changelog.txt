@@ -106,3 +106,17 @@ Starting from Tony Nicholson's V0.99
   applications that issue special ZSDOS calls to determine whether they are
   running under ZSDOS or vanilla CP/M.
 
+
+26/12/21
+
+- Implemented BDOS functions 14 (select disk), 25 (get current disk) and 24
+  (get login vector). The login vector is used to avoid a time-consuming
+  re-logging of an already logged-in disk in function 14.
+
+- Function 13 (reset disk system) now clears the login vector and re-logins
+  the currently selected disk (note: the real CP/M always resets the current
+  disk to A).
+
+- The main routine now allows changing the current disk with a 'd:' command
+  like CP/M CCP does.
+

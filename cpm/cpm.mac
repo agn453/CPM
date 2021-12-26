@@ -279,7 +279,7 @@ bdostable:
 	defw	rdbuf		; 10 - read console buffer
 	defw	console_status	; 11 - get console status
 	defw	return_version	; 12 - get version
-	defw	reset_dma	; 13 - reset disk system
+	defw	reset_dos	; 13 - reset disk system
 	defw	select_disk	; 14 - select disk
 	defw	openfile 	; 15 - open file
 	defw	closefile 	; 16 - close file
@@ -290,14 +290,14 @@ bdostable:
 	defw	writefile	; 21 - write next record
 	defw	makefile	; 22 - create file
 	defw	rename		; 23 - rename file
-	defw	ret_hl_1	; 24 - get login vector
-	defw	ret_hl_0	; 25 - get current disk
+	defw	get_dlog	; 24 - get login vector
+	defw	current_disk	; 25 - get current disk
 	defw	set_dma		; 26 - set disk DMA address
 	defw	get_alv		; 27 - get allocation vector
 	defw	no_good		; 28 - write protect disk
 	defw	ret_hl_0	; 29 - get read-only vector
 	defw	no_good		; 30 - set file attributes
-	defw	get_alloca	; 31 - get addr(dpb params)
+	defw	get_dpba	; 31 - get addr(dpb params)
 	defw	ret_hl_0	; 32 - set/get user code
 	defw	readrandom	; 33 - read random
 	defw	writerandom	; 34 - write random
@@ -315,7 +315,7 @@ maxbdosfn equ	(($-bdostable)/2)-1 ; should be 40 (028h)
 ; BDOS call (function 1) read console
 
 read_console:
-	call	readchar
+	call	_conin
 	call	echoc		; Echo character
 	jr	c,rc_1		; Non-printing?
 	push	af
@@ -350,7 +350,7 @@ direct_console:
 	ld	a,h
 	or	l
 	ret	z		; no char available, return zero
-	call	readchar
+	call	_conin
 	jr	rc_1
 
 ;*******************************************************************
@@ -573,7 +573,7 @@ console_status:
 	ld	a,l
 	or	h
 	ret	z		; no char available
-	jr	ret255
+	jp	ret255
 
 ;*******************************************************************
 ; BDOS call (function 12) return version number
@@ -585,10 +585,14 @@ return_version:
 ;*******************************************************************
 ; BDOS call (function 13) reset disk system (and DMA address)
 
-reset_dma:
+reset_dos:
+	ld	hl,0
+	ld	(dlog),hl	; reset login vector
 	ld	hl,cpmdma
-	ld	(dmaadr),hl
-	ret
+	ld	(dmaadr),hl	; reset DMA address
+	ld	a,(cpmddr)
+	ld	iyl,a
+	jp	sel_1		; re-login default disk
 
 ;*******************************************************************
 ; BDOS call (function 14) select disk
@@ -596,11 +600,55 @@ reset_dma:
 ; On entry: IYL contains the selected disk (0..15)
 
 select_disk:
-	ld	a,iyl		; which drive?
-	or	a		; only drive A: (0)
-	jp	z,login		; activate this disk and return
+	ld	a,(cpmddr)
+	cp	iyl		; is it the current disk?
+	jp	z,ret_hl_0	; yes
+sel_1:	ld	c,iyl
+	call	_seldsk		; call BIOS select disk
+	ld	a,h
+	or	l		; valid drive?
+	jr	z,invalid_drive	; no, return error
+	ldw	hl,(hl+14)
+	ld	(alloca),hl	; store alloc vector address
+	ld	a,iyl
+	ld	(cpmddr),a	; store disk code
+	ld	hl,(dlog)
+	call	shrhl
+	rr	l		; disk logged-in?
+	jp	c,ret_hl_0	; yes, return
+	ld	hl,1
+	ld	a,iyl
+	call	shlhl		; shift mask
+	ex	de,hl
+	ld	hl,(dlog)
+	ld	a,l
+	or	e		; else set bit in login vector
+	ld	l,a
+	ld	a,h
+	or	d
+	ld	h,a
+	ld	(dlog),hl
+	jp	login		; activate this disk and return
 				;  (build allocation vector)
-	ld	hl,04ffh	; return "invalid drive" error
+invalid_drive:
+	ld	hl,04ffh	; "invalid drive" error
+	ret
+
+; Shift right HL by amount A
+shrhl:	or	a
+	ret	z
+	ld	b,a
+shr_1:	srl	h
+	rr	l
+	djnz	shr_1
+	ret
+
+; Shift left HL by amount A
+shlhl:	or	a
+	ret	z
+	ld	b,a
+shl_1:	add	hl,hl
+	djnz	shl_1
 	ret
 
 ;*******************************************************************
@@ -1529,24 +1577,38 @@ rn_err:
 	ret
 
 ;*******************************************************************
+; BDOS call (function 24) get login vector
+
+get_dlog:
+	ld	hl,(dlog)
+	ret
+
+;*******************************************************************
+; BDOS call (function 25) get current disk
+
+current_disk:
+	ld	hl,(cpmddr)
+	ld	h,0
+	ret
+
+;*******************************************************************
 ; BDOS call (function 26) set DMA address
 
 set_dma:
-	ld	hl,(arg)
-	ld	(dmaadr),hl
+	ld	(dmaadr),iy
 	ret
 
 ;*******************************************************************
 ; BDOS call (function 27) get allocation vector
 
 get_alv:
-	ld	hl,alv
+	ld	hl,(alloca)
 	ret
 
 ;*******************************************************************
 ; BDOS call (function 31) get address of disk parameter block
 
-get_alloca:
+get_dpba:
 	ld	hl,dpb
 	ret
 
@@ -1730,134 +1792,6 @@ reset_drive:
 	page
 	subttl	Internal emulator routines
 ;*******************************************************************
-; Copy parameter pointed to by IX into the CP/M FCB pointed to by HL
-
-fillfcb:
-	ld	(hl),0		; default to current drive
-	ld	a,(ix+1)
-	cp	':'		; drive specified?
-	jr	nz,ff_nodrv	; no
-	ld	a,(ix)
-	sub	'A'-1
-	ld	(hl),a		; else store drive code
-	inc	ix
-	inc	ix
-ff_nodrv:
-	inc	hl		; advance HL to fcbname
-	push	hl		; save and init with spaces
-	ld	b,8+3		;  to simplify the copy
-	ld	a,' '
-ff_blnk:
-	ld	(hl),a
-	inc	hl
-	djnz	ff_blnk
-	xor	a
-	ld	b,33-12
-ff_blnk1:
-	ld	(hl),a		; clear the rest of the FCB
-	inc	hl
-	djnz	ff_blnk1
-	pop	hl		; restore pointer to fcbname
-
-	ld	b,8		; name part is up to 8 chars
-ff_nam:	ld	a,(ix+0)
-	call	delimiter	; is it a delimiter?
-	ret	z		; yes - done
-	inc	ix
-	cp	'.'		; filename delimiter
-	jr	z,ff_ext
-	cp	'*'		; wildcard?
-	jr	z,ff_nwild
-	ld	(hl),a		; store in FCB
-	inc	hl
-	djnz	ff_nam
-
-	; fall through here if name > 8 chars
-ff_skp:
-	ld	a,(ix+0)	; skip rest of name part
-	call	delimiter
-	ret	z		; delimiter - done
-	inc	ix
-	cp	'.'
-	jr	z,ff_exte
-	jr	ff_skp
-
-	; wildcard to rest of fcbname
-ff_nwild:
-	ld	(hl),'?'	; fill rest of filename
-	inc	hl		;  with '?'
-	djnz	ff_nwild
-
-	; advance in filename until '.' or end
-ff_nsk:	ld	a,(ix+0)	; skip until '.' or eos
-	inc	ix
-	or	a
-	ret	z
-	cp	'.'
-	jr	nz,ff_nsk
-
-ff_ext:	ld	a,b
-	or	a		; all 8 characters?
-	jr	z,ff_exte	; yes
-
-ff_adv	inc	hl		; no advance to fcbext
-	djnz	ff_adv
-
-ff_exte:
-	ld	b,3		; now we do fcbext
-ff_enxt:
-	ld	a,(ix+0)
-	call	delimiter
-	ret	z		; delimiter - done
-	inc	ix
-	cp	'*'		; wildcard ext?
-	jr	z,ff_ewild
-	ld	(hl),a
-	inc	hl
-	djnz	ff_enxt
-	ret
-
-ff_ewild:
-	ld	(hl),'?'	; wildcard for rest
-	inc	hl		;  of fcbext
-	djnz	ff_ewild
-	ret
-
-;*******************************************************************
-; return number of available input chars in HL
-
-char_avail:
-	call	$FLUSH		; make sure all is output first
-;;	ld	hl,0
-;;	call	$TTGST		; is there any char in queue?
-;;	ret	z		; no, return 0 in HL and carry set
-	ld	hl,(TTQ)	; TQ.IP in L, TQ.OP in H
-	ld	a,l
-	cp	h		; if TQ.OP > TQ.IP the ring
-	jr	nc,ca_1		;  buffers have wrapped
-	add	a,64		; (TTQ input queue is 64 bytes)
-ca_1:	sub	h
-	ld	h,0
-	ld	l,a		; return count and carry clear
-	ret
-
-;*******************************************************************
-; read one character from stdin
-
-readchar:
-	jp	$TTGC		; get a character into A
-
-;*******************************************************************
-; write one char from A to stdout
-
-writechar:
-	push	hl		; don't change HL
-	ld	c,a
-	call	conout		; output keeping track of cursor
-	pop	hl
-	ret
-
-;*******************************************************************
 ; read 128 bytes to (dmaadr)
 ;
 ; Called with IX = FTABLE entry, IY = CP/M FCB address
@@ -1868,9 +1802,6 @@ writechar:
 ; Also Carry flag is set on error.
 
 read128:
-	ld	e,c
-	ld	d,b
-	ld	c,a
 	push	ix
 	ld	ix,qread
 	call	SETREC		; set block, offset and length in QIO structure
@@ -1904,9 +1835,6 @@ read128:
 ; Returns bytes written in BC
 
 write128:
-	ld	e,c
-	ld	d,b
-	ld	c,a
 	push	ix
 	ld	ix,qwrite
 	call	SETREC		; set block, offset and length in qwrite
@@ -1962,6 +1890,9 @@ m2:	ldw	(CCFLG),0	; enable ctrl-C break
 
 	call	BANNER		; output banner and drive assignment map
 
+	ld	hl,0		; IOBYTE = 0, current drive = A:
+	ld	(cpmiob),hl	;  set both
+
  if DEBUG and DBG_ODT
 	call	ODT$IN
 	ld	hl,0
@@ -1971,9 +1902,8 @@ m2:	ldw	(CCFLG),0	; enable ctrl-C break
 	call	ODT$
  endif
 
-	ld	hl,0		; IOBYTE = 0, current drive = A:
-	ld	(cpmiob),hl	;  set both
-	call	login		; Log-in the first emulated drive
+	ld	c,13
+	call	entry		; Log-in the first emulated drive
 				;  (and build an allocation vector)
 
 reentry:
@@ -1998,9 +1928,9 @@ reentry:
 	xor	a		; reset flag to allow console echo
 	ld	(compcol),a
 
-	ld	hl,ttibuf	; point HL to input buffer text
-	ld	(arg),hl	; we're calling the BDOS routine
-	call	rdbuf
+	ld	de,ttibuf	; point HL to input buffer text
+	ld	c,10
+	call	cpmentry	; read console buffer
 
 	ld	a,(hl)		; how many characters entered?
 	or	a
@@ -2020,7 +1950,22 @@ reentry:
 	ld	hl,COMFCB
 	call	fillfcb		; try to get a file name
 
-	ld	hl,COMEXT
+	ld	hl,COMFCB+1
+	ld	a,(hl)
+	cp	' '		; empty FCB?
+	jr	nz,m_3		; no
+	dec	hl
+	ld	a,(hl)
+	or	a		; drive specified?
+	jr	z,m_3		; no
+
+	dec	a
+	ld	e,a
+	ld	c,14
+	call	cpmentry	; else select drive
+	jp	reentry
+
+m_3:	ld	hl,COMEXT
 	ld	de,COMFCB+fcbext
 	ld	bc,3
 	ldir			; add .COM file type
@@ -2126,7 +2071,9 @@ m_2:	ld	a,c		; get length
 	pop	hl
   endif
 
-	call	reset_dma	; set default DMA address
+	ld	de,cpmdma
+	ld	c,26
+	call	cpmentry	; set default DMA address
 
 	ld	a,0ffh		; enable lowercase input
 	ld	(ttlc),a
@@ -2148,7 +2095,7 @@ login:	ld	hl,(dmaadr)	; save CP/M DMA address on stack
 	push	hl
 
 	ldw	(blocks),0	; zero block count
-	ld	hl,alv
+	ld	hl,(alloca)
 	xor	a		; clear allocation vector
 	ld	b,a		;  (allocation vector is 256 bytes)
 lo_0:	ld	(hl),a
@@ -2209,7 +2156,7 @@ log_it:	ld	a,1
 				;  to set, remainder in E (0..7)
 	ld	b,h
 	ld	c,l
-	ld	hl,alv
+	ld	hl,(alloca)
 lo_4:	ld	a,b
 	or	c
 	jr	z,lo_5
@@ -2451,7 +2398,7 @@ SETDIR:	call	set_1		; index into map table
 	jr	set_3
 
 ; Same as above, but set only device and unit. Returns HL pointing to
-; directory.
+; directory name.
 
 SETDEV:	call	set_1		; index into map table
 	ret	c
@@ -2578,9 +2525,10 @@ cls1:	ld	hl,0
 
 ; Convert 128-byte CP/M record number to 512-byte disk block and offset
 ; in QIO block.
-; Record number in CDE, QIO block address in IX.
+; Record number in ABC, QIO block address in IX.
 
-SETREC:	ld	a,e
+SETREC:	ld	e,a		; record number now in EBC
+	ld	a,c
 	and	3		; 4 CP/M records in a block
 	rrca
 	rrca			; *64
@@ -2588,15 +2536,15 @@ SETREC:	ld	a,e
 	ld	h,0
 	add	hl,hl		; *128
 	ldw	(ix+Q.OFS),hl	; offset
-	srl	c
-	rr	d
-	rr	e
-	srl	c
-	rr	d
-	rr	e		; /4
-	ld	b,0
-	ldw	(ix+Q.BLK),de	; blkno
-	ldw	(ix+Q.BLK+2),bc
+	srl	e
+	rr	b
+	rr	c
+	srl	e
+	rr	b
+	rr	c		; /4
+	ld	d,0
+	ldw	(ix+Q.BLK),bc	; blkno
+	ldw	(ix+Q.BLK+2),de
 	ld	hl,128
 	ldw	(ix+Q.LEN),hl	; len
 	ret
@@ -2881,13 +2829,12 @@ warmboot:
 ;
 ; BIOS console input
 _conin:
-	jp	readchar
+	jp	$TTGC		; get a character into A
 
 ; BIOS console output
 _conout:
 	ld	a,c
 	jp	writechar
-
 
 ; BIOS console input status
 _conist:
@@ -2906,10 +2853,13 @@ _rdreof:
 ; BIOS select disk
 _seldsk:
 	ld	hl,0		; assume error return value
-	ld	a,c		; only a single drive A:
-	or	a
-	ret	nz
-	ld	hl,dph
+	ld	a,(numdrv)
+	dec	a
+	cp	c		; valid drive?
+	ret	c		; no, error
+	multu	a,16
+	ld	de,dph0
+	add	hl,de
 	ret
 
 ; Dummy routine for unsupported BIOS calls
@@ -3158,6 +3108,34 @@ TTCLR:	push	hl
 	ret
 
 ;*******************************************************************
+; return number of available input chars in HL
+
+char_avail:
+	call	$FLUSH		; make sure all is output first
+;;	ld	hl,0
+;;	call	$TTGST		; is there any char in queue?
+;;	ret	z		; no, return 0 in HL and carry set
+	ld	hl,(TTQ)	; TQ.IP in L, TQ.OP in H
+	ld	a,l
+	cp	h		; if TQ.OP > TQ.IP the ring
+	jr	nc,ca_1		;  buffers have wrapped
+	add	a,64		; (TTQ input queue is 64 bytes)
+ca_1:	sub	h
+	ld	h,0
+	ld	l,a		; return count and carry clear
+	ret
+
+;*******************************************************************
+; write one char from A to stdout
+
+writechar:
+	push	hl		; don't change HL
+	ld	c,a
+	call	conout		; output keeping track of cursor
+	pop	hl
+	ret
+
+;*******************************************************************
 ;
 ; Close any open files
 close_all:
@@ -3293,6 +3271,100 @@ chill:	ld	a,'-'		; illegal is an '-'
 	ret
 
 ;*******************************************************************
+; Copy parameter pointed to by IX into the CP/M FCB pointed to by HL
+
+fillfcb:
+	ld	(hl),0		; default to current drive
+	ld	a,(ix+1)
+	cp	':'		; drive specified?
+	jr	nz,ff_nodrv	; no
+	ld	a,(ix)
+	sub	'A'-1
+	ld	(hl),a		; else store drive code
+	inc	ix
+	inc	ix
+ff_nodrv:
+	inc	hl		; advance HL to fcbname
+	push	hl		; save and init with spaces
+	ld	b,8+3		;  to simplify the copy
+	ld	a,' '
+ff_blnk:
+	ld	(hl),a
+	inc	hl
+	djnz	ff_blnk
+	xor	a
+	ld	b,33-12
+ff_blnk1:
+	ld	(hl),a		; clear the rest of the FCB
+	inc	hl
+	djnz	ff_blnk1
+	pop	hl		; restore pointer to fcbname
+
+	ld	b,8		; name part is up to 8 chars
+ff_nam:	ld	a,(ix+0)
+	call	delimiter	; is it a delimiter?
+	ret	z		; yes - done
+	inc	ix
+	cp	'.'		; filename delimiter
+	jr	z,ff_ext
+	cp	'*'		; wildcard?
+	jr	z,ff_nwild
+	ld	(hl),a		; store in FCB
+	inc	hl
+	djnz	ff_nam
+
+	; fall through here if name > 8 chars
+ff_skp:
+	ld	a,(ix+0)	; skip rest of name part
+	call	delimiter
+	ret	z		; delimiter - done
+	inc	ix
+	cp	'.'
+	jr	z,ff_exte
+	jr	ff_skp
+
+	; wildcard to rest of fcbname
+ff_nwild:
+	ld	(hl),'?'	; fill rest of filename
+	inc	hl		;  with '?'
+	djnz	ff_nwild
+
+	; advance in filename until '.' or end
+ff_nsk:	ld	a,(ix+0)	; skip until '.' or eos
+	inc	ix
+	or	a
+	ret	z
+	cp	'.'
+	jr	nz,ff_nsk
+
+ff_ext:	ld	a,b
+	or	a		; all 8 characters?
+	jr	z,ff_exte	; yes
+
+ff_adv	inc	hl		; no advance to fcbext
+	djnz	ff_adv
+
+ff_exte:
+	ld	b,3		; now we do fcbext
+ff_enxt:
+	ld	a,(ix+0)
+	call	delimiter
+	ret	z		; delimiter - done
+	inc	ix
+	cp	'*'		; wildcard ext?
+	jr	z,ff_ewild
+	ld	(hl),a
+	inc	hl
+	djnz	ff_enxt
+	ret
+
+ff_ewild:
+	ld	(hl),'?'	; wildcard for rest
+	inc	hl		;  of fcbext
+	djnz	ff_ewild
+	ret
+
+;*******************************************************************
 ; Get next non-blank char.
 ;
 ; On entry: HL -> character string
@@ -3406,6 +3478,7 @@ oldstk:	defs	2		; saved stack pointer
 arg:	defs	2		; entry argument from DE
 func:	defs	2		; entry function code from C
 dmaadr:	defs	2		; current DMA address
+dlog:	defw	0		; logged-in disks
 errno:	defs	1		; RSX280 error code
 lret:
 aret:	defs	2		; address value return result
@@ -3790,6 +3863,8 @@ dptr:	defs	1		; directory entry pointer 0,32,64,96
 dcnt:	defs	2		; directory counter
 exsiz:	defs	2		; extent size in sectors
 
+alloca:	defw	0		; current alloc vector address
+
 direntry:
 	defs	DESZ		; directory file record
 dirfsize:
@@ -3854,11 +3929,8 @@ logfcb:	defb	'?'		; search fcb to get all files
 alv0::	defs	((2048-1) shr 3)+1	; DSM/8+1
 alv1::	defs	((2048-1) shr 3)+1	; DSM/8+1
 
-;TODO: fix!
-alv	equ	alv0
-dph	equ	dph0
-
 ; CP/M drive to RSX280 device and directory assignment table
+numdrv:	defb	2		   ; number of emulated drives
 drvmap:	defb	'SY',0,'         ' ; A: = SY:[UsrDir]
 	defb	'SY',0,'CPM      ' ; B: = SY:[CPM]
 
