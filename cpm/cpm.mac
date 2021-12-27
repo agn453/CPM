@@ -1,5 +1,5 @@
 	title	CP/M 2.2 Emulator for RSX280
-	subttl	22-Dec-2021
+	subttl	27-Dec-2021
 	ident	"V0.99"		; pre-release version
 
 ;*******************************************************************
@@ -57,8 +57,8 @@ DBG_ERR equ	8000h		; error debug
 DBG_ODT	equ	0100h		; debug with ODT
 
 ;DEBUG	equ	DBG_ERR or DBG_SRH
-DEBUG	equ	DBG_ODT ;DBG_ERR or DBG_SRH
-;DEBUG	equ	false
+;DEBUG	equ	DBG_ODT ;DBG_ERR or DBG_SRH
+DEBUG	equ	false
 
 ; Include files and externals
 
@@ -2814,7 +2814,7 @@ tobios	equ	(cpmbios-cpmtpa)-($-tpa)
 ;
 ; The BIOS jump table.
 
-bios::	jp	done		;0 Cold Boot
+bios::	jp	_boot		;0 Cold Boot
 warmboot:
 	jp	done		;1 Warm Boot
 	jp	_conist		;2 Console Input Status
@@ -2878,7 +2878,6 @@ dummy:
 	; fall through
 
 ; end of program run
-
 done:
 	;Prompt for next CP/M program
 	ld	sp,bdos		; back to our stack
@@ -2894,6 +2893,21 @@ done:
 	ld	(ttlc),a	; uppercase enable
 	ldw	(CCFLG),0	; re-enable Ctrl-C processing
 	jp	reentry		; go and get next emulator command
+
+; Special BIOS functions
+_boot:
+	ld	a,c
+	xor	b
+	cp	55h
+	jr	nz,done
+	ld	a,c
+	dec	a
+	jp	z,$EXIT
+	dec	a
+	jr	z,getmap
+	jr	done
+getmap:	ld	hl,numdrv
+	ret
 	page
 	subttl	Support routines
 
@@ -3285,6 +3299,8 @@ fillfcb:
 	cp	':'		; drive specified?
 	jr	nz,ff_nodrv	; no
 	ld	a,(ix)
+	or	a
+	jr	z,ff_nodrv
 	call	UCASE
 	sub	'A'-1
 	ld	(hl),a		; else store drive code

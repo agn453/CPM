@@ -125,3 +125,13 @@ Starting from Tony Nicholson's V0.99
 
 - Implemented subfunction 0FEh (return console status) of BDOS function 6.
 
+- Adding simple BIOS extensions via the cold-boot entry point, which CP/M
+  never uses after startup - an idea taken from Hal Bower's BIOS for the
+  P112. The call passes a function code in reg C and a validation code
+  in reg B (function code XOR'ed with 55h):
+  * function code 1 exits the emulator.
+  * function code 2 returns the address of the drive mapping table.
+
+- Added a simple CP/M application to change drive mappings "on the fly"
+  using the BIOS extension above.
+
