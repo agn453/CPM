@@ -8,20 +8,22 @@ TKB  = ../../Tools/cpm/tkb.com
 .SUFFIXES:
 .SUFFIXES: .mac .rel
 
-SRCS = cpm.mac
+SRCS = cpm.mac map.mac
 
 OBJS = $(SRCS:.mac=.rel)
 XRFS = $(SRCS:.mac=.crf)
 
-all: cpm.tsk
+all: cpm.tsk map.com
 
-# *.inc and .lib files are copied from the latest RSX280 build
-# in the libs/fcslib and libs/syslib sub-directories
+# *.inc files are copied from the latest RSX280 build
 $(OBJS): %.rel: %.mac *.inc
-	$(ZXCC) $(ZSM4) -"=$</l/dZXCC"
+	$(ZXCC) $(ZSM4) -"=$</l"
 
-cpm.tsk: $(OBJS) syslib.lib fcslib.lib
-	$(ZXCC) $(TKB) -"$@,cpm,cpm=cpm/ofmt=tsk,fcslib/lb,syslib/lb/task=...CPM/asg=TI:5,SY:1-4,SY:6-8"
+cpm.tsk: cpm.rel odt.lib
+	$(ZXCC) $(TKB) -"$@,cpm,cpm=cpm/ofmt=tsk,odt/lb/load=0/task=...CPM/asg=TI:5,SY:1-4,SY:6-8"
+
+map.com: map.rel
+	$(ZXCC) $(TKB) -"$@,,=map/ofmt=com"
 
 clean:
 	rm -f *.com *.rel *.prn *.sym *.map core *.tsk *~ *.\$$\$$\$$

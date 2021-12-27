@@ -23,7 +23,7 @@ start:	ld	hl,0
 	ld	hl,ddma	; any parameters?
 	ld	a,(hl)
 	or	a
-	jr	z,chartest	; no - do charater I/O test
+	jr	z,chartest	; no - do character I/O test
 
 	jp	searchtest	; do a search test
 
