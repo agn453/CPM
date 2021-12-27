@@ -40,4 +40,6 @@ delete testcpm.cmd
 import testcpm.cmd testcpm.cmd
 delete testcpm.mac
 import testcpm.mac testcpm.mac
+delete map.mac
+import map.mac map.mac
 quit
