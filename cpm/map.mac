@@ -1,6 +1,10 @@
 	.Z280
 
 ; MAP command for CP/M emulator: sets or display emulated drive assignments.
+;
+; Usage:
+;   MAP                     -- without arguments displays current mapping
+;   MAP d:=ddn:[directory]  -- map ddn:[directory] to CP/M drive d:
 
 CR	equ	0Dh
 LF	equ	0Ah
@@ -223,7 +227,7 @@ get1:	ld	a,(hl)
 ; Utility routines
 
 chkeq:	call	skipb
-	cp	'='		; chack for equal sign
+	cp	'='		; check for equal sign
 	scf
 	ret	nz
 	inc	hl
