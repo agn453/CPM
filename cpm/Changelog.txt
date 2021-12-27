@@ -14,7 +14,7 @@ Starting from Tony Nicholson's V0.99
   context-switching, which may reduce performance.
 
 - We can get rid of the PFN call as well, since CP/M FCBs are easy to convert
-  to RSX280 FDBs (~600 more bytes freed.)
+  to RSX280 FDBs (~600 additional bytes freed.)
 
 - Use a simple CP/M drive to RSX280 directory mapping table. Only two drives
   supported at the moment: SY:[UserDir] and SY:[CPM]. Still TODO: implement
@@ -55,7 +55,7 @@ Starting from Tony Nicholson's V0.99
   bytes, else the compare loop 'searchloop' will very likely fail.
 
 - Build emulator task to load at address of 0000h, else the kernel will not
-  allow file I/O below the usual 0100h task bottom limit (particularly I/O
+  allow file I/O below the usual 0100h task bottom limit (specifically, I/O
   to the default CP/M buffer at 0080h will not be allowed.) This was not a
   problem with FCSLIB, since I/O was done to/from a buffer in high memory.
 
@@ -97,10 +97,10 @@ Starting from Tony Nicholson's V0.99
 - BDOS function 35: reverted changes back to computing size via directory
   scan, as the function does not require the file to be open.
 
-- Extent size is larger than 128 for the emulated 4-block "disk". The search
-  first/next functions now take into account the extent mask; this keeps
-  NULU happy and also fixes the problem of large files being reported twice
-  (or more) in a search next function.
+- Extent size is larger than 128 records for the emulated 4K-block disk.
+  The search first/next functions now take into account the extent mask;
+  this keeps NULU happy and also fixes the problem of large files being
+  reported twice (or more) in a search next function.
 
 - CP/M BDOS returns zero for illegal function numbers. This is used by some
   applications that issue special ZSDOS calls to determine whether they are
@@ -110,10 +110,10 @@ Starting from Tony Nicholson's V0.99
 26/12/21
 
 - Implemented BDOS functions 14 (select disk), 25 (get current disk) and 24
-  (get login vector). The login vector is used to avoid a time-consuming
-  re-logging of an already logged-in disk in function 14.
+  (get login vector). The login vector is used by function 14 to avoid a
+  time-consuming re-logging of an already logged-in disk.
 
-- Function 13 (reset disk system) now clears the login vector and re-logins
+- Function 13 (reset disk system) now clears the login vector and re-logs in
   the currently selected disk (note: the real CP/M always resets the current
   disk to A).
 
@@ -126,7 +126,7 @@ Starting from Tony Nicholson's V0.99
 - Implemented subfunction 0FEh (return console status) of BDOS function 6.
 
 - Adding simple BIOS extensions via the cold-boot entry point, which CP/M
-  never uses after startup - an idea taken from Hal Bower's BIOS for the
+  never uses after startup - an idea borrowed from Hal Bower's BIOS for the
   P112. The call passes a function code in reg C and a validation code
   in reg B (function code XOR'ed with 55h):
   * function code 1 exits the emulator.
@@ -134,4 +134,9 @@ Starting from Tony Nicholson's V0.99
 
 - Added a simple CP/M application to change drive mappings "on the fly"
   using the BIOS extension above.
+
+
+27/12/21
+
+- Hi-Tech C compiler already compiles a simple "Hello world" application.
 
