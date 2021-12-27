@@ -24,6 +24,17 @@ Further documentation will be added at a later time.
 Revision history is now in reverse chronological order.
 
 
+Update: 28-Dec-2021
+-------------------
+
+Hector Peraza has corrected and enhanced the emulator considerably.
+I've just pulled his changes back into this master repository.  Most
+of his updates are documented in the new Changelog.txt file (and I
+will move this update section of this README into this file shortly).
+Much of the emulation is now accurately running most well behaved CP/M
+2.2 programs.
+
+
 Update: 14-Jun-2020
 -------------------
 
